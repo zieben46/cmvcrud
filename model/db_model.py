@@ -1,6 +1,6 @@
 from sqlalchemy import Table, create_engine, inspect
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from sqlalchemy import create_engine, Table, MetaData
+from sqlalchemy import create_engine, Table, MetaData, select
 import pandas as pd
 from model.base_model import CrudType, SCDType, DatabaseType, BaseModel
 import os
@@ -23,6 +23,7 @@ class DatabaseModel (BaseModel):
         else:
             raise ValueError(f"⚠️ Unsupported database type: {database}")
         
+        self.table_name = table_name
         self.engine = create_engine(url)
         self.session = sessionmaker(bind=self.engine)()
 
@@ -34,22 +35,38 @@ class DatabaseModel (BaseModel):
         if self.table is None:
             print("⚠️ Available tables:", metadata.tables.keys())  # Debugging
             raise ValueError(f"⚠️ Table `{table_name}` does not exist in the database.")
+        
+        self.scd_type = self._get_scd_type()
 
-            if not self.table:
-                raise ValueError(f"⚠️ Table `{table_name}` does not exist.")
 
-    def execute(self, operation: CrudType, scd_type: SCDType, **kwargs):
-        """Executes a CRUD operation on the specific table."""
+    def _get_scd_type(self) -> SCDType:
+        """Fetch the SCD type for this table from `ALL_TABLES_DATA`."""
+        with self.engine.connect() as conn:
+            query = select(metadata.tables["ALL_TABLES_DATA"].c.scd_type).where(
+                metadata.tables["ALL_TABLES_DATA"].c.table_name == self.table_name
+            )
+            result = conn.execute(query).fetchone()
+
+        if result is None:
+            raise ValueError(f"⚠️ No SCD type defined for `{self.table_name}` in `ALL_TABLES_DATA`.")
+
+        # return SCDType(result[0])  # Convert to SCDType Enum
+        return SCDType.SCDTYPE1
+
+
+
+    def execute(self, operation: CrudType, **kwargs):
+        """Executes CRUD operations using the stored SCD type."""
         if operation == CrudType.CREATE:
-            self._create(scd_type, **kwargs)
+            self._create(**kwargs)
         elif operation == CrudType.READ:
-            return self._read(scd_type)
+            return self._read()
         elif operation == CrudType.UPDATE:
-            self._update(scd_type, **kwargs)
+            self._update(**kwargs)
         elif operation == CrudType.DELETE:
-            self._delete(scd_type, **kwargs)
+            self._delete(**kwargs)
         else:
-            raise ValueError(f"⚠️ Invalid CRUD operation: {operation}")
+            raise ValueError(f"Invalid CRUD operation: {operation}")
 
     def _create(self, scd_type: SCDType, **kwargs):
         """Handles CREATE operation based on SCD type."""

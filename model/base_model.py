@@ -38,7 +38,7 @@ class BaseModel(ABC):
         self.df = pd.DataFrame()  # Initialize an empty DataFrame
 
     @abstractmethod
-    def execute(self, operation: CrudType, scd_type: SCDType, **kwargs) -> None:
+    def execute(self, operation: CrudType, **kwargs) -> None:
         """Executes the given CRUD operation based on SCD type."""
         pass
 

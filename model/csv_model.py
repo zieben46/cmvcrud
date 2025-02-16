@@ -10,5 +10,5 @@ class CSVModel(BaseModel):
         self.csv_path = csv_path
 
 
-    def execute(self, operation: CrudType, scd_type: SCDType, **kwargs):
+    def execute(self, operation: CrudType, **kwargs):
         pass
