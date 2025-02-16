@@ -1,0 +1,15 @@
+# Ignore all __pycache__ directories and compiled Python files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Ignore pytest cache
+.pytest_cache/
+
+# Ignore virtual environment (if using one)
+# .venv/
+# venv/
+
+# Ignore system-specific files
+.DS_Store
+Thumbs.db
