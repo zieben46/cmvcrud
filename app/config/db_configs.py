@@ -12,11 +12,11 @@ CREDENTIALS = [
 ]
 
 class PostgresConfig():
-    def __init__(self, getenv_function):
-        self.getenv_function = getenv_function
+    def __init__(self, getenv_func):
+        self.getenv_func = getenv_func
 
     def _load_credentials(self):
-        credentials = {key: self.getenv_function(key) for key in CREDENTIALS}
+        credentials = {key: self.getenv_func(key) for key in CREDENTIALS}
         missing_keys = [key for key, value in credentials.items() if value is None]
         if missing_keys:
             raise ValueError(f"Missing environment variables: {', '.join(missing_keys)}")

@@ -11,6 +11,7 @@ class SCDStrategy(ABC):
 
     def __init__(self, table: Table):
         self.table = table
+        self.primary_keys = table.primary_key
 
     @abstractmethod
     def create(self, conn: Connection, **kwargs):
@@ -65,6 +66,33 @@ class SCDType1Strategy(SCDStrategy):
         conn.execute(update_query)
         conn.commit()
 
+    # def update(self, conn: Connection, updates: list[dict]):
+    #     """
+    #     Updates multiple records in the table.
+
+    #     :param conn: Database connection object
+    #     :param updates: List of JSON objects, each containing primary key(s) and updated fields.
+    #     """
+    #     if not isinstance(updates, list):  
+    #         raise TypeError("Updates must be a list of dictionaries.")
+
+    #     if not updates:
+    #         return  # No updates provided
+
+    #     for update_data in updates:
+    #         # Ensure primary key fields exist in the update data
+    #         filters = {pk: update_data.pop(pk, None) for pk in self.primary_keys}
+            
+    #         if None in filters.values():
+    #             raise ValueError(f"Each update must include all primary key(s): {self.primary_keys}")
+
+    #         # Build update query
+    #         update_query = self.table.update().where(
+    #             *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
+    #         ).values(**update_data)
+
+    #         conn.execute(update_query)
+
     def delete(self, conn: Connection, **kwargs):
         delete_query = self.table.delete().where(self.table.c.id == kwargs["id"])
         conn.execute(delete_query)
@@ -101,18 +129,18 @@ class SCDType2Strategy(SCDStrategy):
 
 ###################################################################################
 class SCDStrategyFactory:
-    """Factory to return the correct SCD strategy based on table type."""
+    """Factory to return the correct SCD scdstrategy based on table type."""
 
     @staticmethod
-    def get_strategy(scd_type: SCDType, table: Table) -> SCDStrategy:
-        """Returns the appropriate SCD strategy instance."""
-        strategy_map = {
+    def get_scdstrategy(scd_type: SCDType, table: Table) -> SCDStrategy:
+        """Returns the appropriate SCD scdstrategy instance."""
+        scdstrategy_map = {
             SCDType.SCDTYPE0: SCDType0Strategy,
             SCDType.SCDTYPE1: SCDType1Strategy,
             SCDType.SCDTYPE2: SCDType2Strategy
         }
 
-        if scd_type not in strategy_map:
+        if scd_type not in scdstrategy_map:
             raise ValueError(f"⚠️ Unsupported SCD type: {scd_type}")
 
-        return strategy_map[scd_type](table) 
+        return scdstrategy_map[scd_type](table) 

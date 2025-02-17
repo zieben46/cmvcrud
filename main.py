@@ -7,6 +7,18 @@ from datetime import timedelta
 
 from fastapi import Form
 
+import logging
+
+# Configure logging to write to a file
+logging.basicConfig(
+    filename="app.log",  # Log file name
+    level=logging.INFO,  # Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logging.info("🚀 FastAPI server starting up...")
+
+
 app = FastAPI(title="FastAPI CRUD API", version="1.0")
 
 # ✅ Include API Endpoints from APIController
