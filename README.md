@@ -37,11 +37,11 @@ venv\Scripts\activate
 FastAPI applications are run using **Uvicorn**, the ASGI server.
 
 ```sh
-uvicorn api_controller:app --reload
+uvicorn main:app --reload
 ```
 
 📌 **Explanation:**
-- `api_controller` → The Python file where `FastAPI()` is instantiated.
+- `main` → The Python file where `FastAPI()` is instantiated.
 - `app` → The FastAPI instance in that file.
 - `--reload` → Enables **auto-reload** (for development).
 
@@ -110,8 +110,6 @@ make start
 Would you like to **Dockerize** the application for deployment? 🐳
 
 
-
-
 =============================
 🔹 1️⃣ Obtain Authentication Token
 =============================
@@ -121,12 +119,6 @@ Would you like to **Dockerize** the application for deployment? 🐳
 curl -X POST "http://127.0.0.1:8000/token" \
      -H "Content-Type: application/x-www-form-urlencoded" \
      -d "username=admin&password=admin123"
-```
-# Response (JWT Token)
-{
-    "access_token": "your_token_here",
-    "token_type": "bearer"
-}
 
 =============================
 🔹 2️⃣ Lock a Table (Only One User Can Lock at a Time)
