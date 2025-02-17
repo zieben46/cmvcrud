@@ -110,15 +110,26 @@ make start
 Would you like to **Dockerize** the application for deployment? 🐳
 
 
+
+
 =============================
 🔹 1️⃣ Obtain Authentication Token
 =============================
 
-# Request Token (Login)
+## Request Token (Login)
 ```bash
 curl -X POST "http://127.0.0.1:8000/token" \
      -H "Content-Type: application/x-www-form-urlencoded" \
      -d "username=admin&password=admin123"
+```
+
+## Response (JWT Token)
+```json
+{
+    "access_token": "your_token_here",
+    "token_type": "bearer"
+}
+```
 
 =============================
 🔹 2️⃣ Lock a Table (Only One User Can Lock at a Time)
