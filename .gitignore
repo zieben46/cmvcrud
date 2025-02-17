@@ -9,7 +9,3 @@
 # Ignore virtual environment (if using one)
 # .venv/
 # venv/
-
-# Ignore system-specific files
-.DS_Store
-Thumbs.db

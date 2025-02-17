@@ -5,6 +5,8 @@ from app.auth.auth import get_current_user
 from app.auth.auth import create_access_token
 from datetime import timedelta
 
+from fastapi import Form
+
 app = FastAPI(title="FastAPI CRUD API", version="1.0")
 
 # ✅ Include API Endpoints from APIController
@@ -13,7 +15,8 @@ app.include_router(api_controller.router)
 
 # ✅ Authentication Route (Token Generation)
 @app.post("/token")
-def login(username: str, password: str):
+# def login(username: str, password: str):
+def login(username: str = Form(...), password: str = Form(...)):
     """Authenticate user and return JWT token."""
     fake_users_db = {
         "admin": {"username": "admin", "password": "admin123", "role": "admin"},

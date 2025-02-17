@@ -14,4 +14,4 @@ run:
 .PHONY: start
 
 start:
-	uvicorn api_controller:app --reload
+	uvicorn main:app --reload
