@@ -9,3 +9,5 @@
 # Ignore virtual environment (if using one)
 # .venv/
 # venv/
+
+app.log

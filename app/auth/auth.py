@@ -1,12 +1,8 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-# from jose import JWTError  --kills it
 from jose import jwt, JWTError
-# from jose import jwt
 from datetime import datetime, timedelta
 from typing import Optional
-
-
 
 # Secret key for encoding/decoding JWT tokens
 SECRET_KEY = "your_secret_key_here"
@@ -47,7 +43,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     """Validate JWT token and return the authenticated user."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username: str = payload.get("sub") # type: ignore
         if username is None or username not in fake_users_db:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     except JWTError:

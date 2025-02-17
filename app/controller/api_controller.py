@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Dict
 from app.models.db_model import DatabaseModel
 from app.models.base_model import CrudType, DatabaseType
 from app.auth.auth import get_current_user
@@ -24,71 +25,69 @@ class APIController:
 
     def _register_routes(self):
         """Registers all routes to the APIRouter."""
-        self.router.post("/{table_name}/create")(self.create_entry)
+        self.router.post("/{table_name}/create")(self.create_entries)  # ✅ Supports batch create
         self.router.get("/{table_name}/read")(self.read_entries)
-        self.router.put("/{table_name}/update/{entry_id}")(self.update_entry)
-        self.router.delete("/{table_name}/delete/{entry_id}")(self.delete_entry)
+        self.router.put("/{table_name}/update")(self.update_entries)  # ✅ Supports batch update
+        self.router.delete("/{table_name}/delete")(self.delete_entries)  # ✅ Supports batch delete
         self.router.post("/{table_name}/lock")(self.lock_table)
         self.router.post("/{table_name}/unlock")(self.unlock_table)
 
-    def create_entry(
-        self, table_name: str, data: dict, 
+    def create_entries(
+        self, table_name: str, data: List[Dict],  
         db: DatabaseModel = Depends(get_db_model), 
         user: dict = Depends(get_current_user)
     ):
-        """Creates a new record in the table (Requires authentication)."""
+        """Creates multiple new records in the table (Requires authentication)."""
         try:
-            db.execute(CrudType.CREATE, **data)
-            return {"message": f"✅ Entry added to `{table_name}` by `{user['username']}`"}
+            db.execute(CrudType.CREATE, data)
+            return {"message": f"✅ {len(data)} entries added to `{table_name}` by `{user['username']}`"}
         except Exception as e:
-            logging.error(f"Error creating entry in `{table_name}`: {str(e)}")
+            logging.error(f"Error creating entries in `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
     def read_entries(
-        self, table_name: str, 
+        self, table_name: str,  
         db: DatabaseModel = Depends(get_db_model), 
         user: dict = Depends(get_current_user)
     ):
         """Reads all records from the table (Requires authentication)."""
         try:
             df = db.execute(CrudType.READ)
-            return df.to_dict(orient="records") # type: ignore
+            return df.to_dict(orient="records")  # type: ignore
         except Exception as e:
             logging.error(f"Error reading `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    def update_entry(
-        self, table_name: str, entry_id: int, data: dict, 
+    def update_entries(
+        self, table_name: str, data: List[Dict],  
         db: DatabaseModel = Depends(get_db_model), 
         user: dict = Depends(get_current_user)
     ):
-        """Updates an entry (Requires authentication and table lock)."""
+        """Updates multiple entries (Requires authentication and table lock)."""
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
 
         try:
-            db.execute(CrudType.UPDATE, id=entry_id, **data)
-            return {"message": f"🔄 Entry `{entry_id}` updated in `{table_name}` by `{user['username']}`"}
+            db.execute(CrudType.UPDATE, data)
+            return {"message": f"🔄 Updated `{len(data)}` entries in `{table_name}` by `{user['username']}`"}
         except Exception as e:
-            logging.error(f"Error updating `{table_name}` entry `{entry_id}`: {str(e)}")
+            logging.error(f"Error updating `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    def delete_entry(
-        self, table_name: str, entry_id: int, 
+    def delete_entries(
+        self, table_name: str, data: List[Dict],  
         db: DatabaseModel = Depends(get_db_model), 
         user: dict = Depends(get_current_user)
     ):
-
-        print(f"user type: {type(user)}, value: {user}")  # 🔥 Debugging user
-        """Deletes an entry (Requires authentication and table lock)."""
+        """Deletes multiple entries (Requires authentication and table lock)."""
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
 
         try:
-            db.execute(CrudType.DELETE, id=entry_id)
-            return {"message": f"🗑️ Entry `{entry_id}` deleted from `{table_name}` by `{user['username']}`"}
+            db.execute(CrudType.DELETE, data)
+            return {"message": f"🗑️ Deleted `{len(data)}` entries from `{table_name}` by `{user['username']}`"}
         except Exception as e:
-            logging.error(f"Error deleting `{table_name}` entry `{entry_id}`: {str(e)}")
+            logging.error(f"Error deleting `{table_name}` entries: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
     def lock_table(self, table_name: str, user: dict = Depends(get_current_user)):

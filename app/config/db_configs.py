@@ -12,7 +12,8 @@ CREDENTIALS = [
 ]
 
 class PostgresConfig():
-    def __init__(self, getenv_func):
+
+    def __init__(self, getenv_func=os.getenv):
         self.getenv_func = getenv_func
 
     def _load_credentials(self):

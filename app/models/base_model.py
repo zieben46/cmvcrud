@@ -31,10 +31,7 @@ class SCDType(Enum):
 class BaseModel(ABC):
     """Abstract interface enforcing CRUD operations for any data source."""
 
-    def __init__(self):
-        self.df = pd.DataFrame()  # Initialize an empty DataFrame
-
     @abstractmethod
-    def execute(self, operation: CrudType, **kwargs) -> None:
+    def execute(self, operation: CrudType, data: List[Dict]) -> None:
         """Executes the given CRUD operation based on SCD type."""
         pass

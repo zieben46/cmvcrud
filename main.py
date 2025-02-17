@@ -1,6 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, Depends, HTTPException
-from app.controllers.api_controller import APIController
+from app.controller.api_controller import APIController
 from app.auth.auth import get_current_user
 from app.auth.auth import create_access_token
 from datetime import timedelta
