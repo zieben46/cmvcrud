@@ -117,8 +117,9 @@ Would you like to **Dockerize** the application for deployment? 🐳
 =============================
 
 # Request Token (Login)
-curl -X POST "http://127.0.0.1:8000/token" \\
-     -H "Content-Type: application/x-www-form-urlencoded" \\
+```bash
+curl -X POST "http://127.0.0.1:8000/token" \
+     -H "Content-Type: application/x-www-form-urlencoded" \
      -d "username=admin&password=admin123"
 
 # Response (JWT Token)
@@ -132,7 +133,8 @@ curl -X POST "http://127.0.0.1:8000/token" \\
 =============================
 
 # Admin Locks `person` Table
-curl -X POST "http://127.0.0.1:8000/person/lock" \\
+```bash
+curl -X POST "http://127.0.0.1:8000/person/lock" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 
 # Response
@@ -145,9 +147,10 @@ curl -X POST "http://127.0.0.1:8000/person/lock" \\
 =============================
 
 # Another User Tries to Update (`Bob` Attempts Update)
-curl -X PUT "http://127.0.0.1:8000/person/update/1" \\
-     -H "Authorization: Bearer OTHER_USER_ACCESS_TOKEN" \\
-     -H "Content-Type: application/json" \\
+```bash
+curl -X PUT "http://127.0.0.1:8000/person/update/1" \
+     -H "Authorization: Bearer OTHER_USER_ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
      -d '{"name": "Bob Updated"}'
 
 # Response (Blocked)
@@ -160,7 +163,8 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \\
 =============================
 
 # Admin Unlocks the Table
-curl -X POST "http://127.0.0.1:8000/person/unlock" \\
+```bash
+curl -X POST "http://127.0.0.1:8000/person/unlock" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 
 # Response
@@ -173,9 +177,9 @@ curl -X POST "http://127.0.0.1:8000/person/unlock" \\
 =============================
 
 # Add a New Entry
-curl -X POST "http://127.0.0.1:8000/person/create" \\
-     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \\
-     -H "Content-Type: application/json" \\
+curl -X POST "http://127.0.0.1:8000/person/create" \
+     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
      -d '{"name": "Alice", "age": 30}'
 
 # Response
@@ -188,7 +192,7 @@ curl -X POST "http://127.0.0.1:8000/person/create" \\
 =============================
 
 # Fetch All Data
-curl -X GET "http://127.0.0.1:8000/person/read" \\
+curl -X GET "http://127.0.0.1:8000/person/read" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 
 # Response
@@ -202,9 +206,9 @@ curl -X GET "http://127.0.0.1:8000/person/read" \\
 =============================
 
 # Update Alice’s Age
-curl -X PUT "http://127.0.0.1:8000/person/update/1" \\
-     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \\
-     -H "Content-Type: application/json" \\
+curl -X PUT "http://127.0.0.1:8000/person/update/1" \
+     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
      -d '{"age": 31}'
 
 # Response
@@ -217,7 +221,7 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \\
 =============================
 
 # Delete Bob’s Record
-curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \\
+curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 
 # Response
@@ -230,7 +234,7 @@ curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \\
 =============================
 
 # Download CSV
-curl -X GET "http://127.0.0.1:8000/person/download" \\
+curl -X GET "http://127.0.0.1:8000/person/download" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 
 =============================
