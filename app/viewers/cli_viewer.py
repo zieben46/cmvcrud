@@ -1,5 +1,5 @@
 import sys
-from controller.api_controller import APIController
+from controllers.api_controller import APIController
 
 class CLIViewer:
     def __init__(self, controller):

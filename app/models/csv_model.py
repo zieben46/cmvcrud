@@ -1,6 +1,6 @@
 # from model.db_config import Config
 # from model.db_model import Model
-from model.base_model import BaseModel, CrudType, SCDType
+from app.models.base_model import BaseModel, CrudType, SCDType
 
 
 

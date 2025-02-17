@@ -1,5 +1,5 @@
 import pytest
-from configs.db_configs import PostgresConfig
+from app.config.db_configs import PostgresConfig
 
 def test_should_throw_error_when_no_credentials_to_load():
     getenv_function = lambda var: None

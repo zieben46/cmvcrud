@@ -10,3 +10,8 @@ clean:
 
 run:
 	$(VENV_PYTHON) -B main.py
+
+.PHONY: start
+
+start:
+	uvicorn api_controller:app --reload

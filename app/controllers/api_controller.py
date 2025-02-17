@@ -1,24 +1,11 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
-from model.db_model import DatabaseModel  # Your DB handler
-from model.base_model import CrudType, SCDType
-from fastapi.responses import StreamingResponse
-import io
-import os
-import pandas as pd
-from auth.auth import get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from app.models.db_model import DatabaseModel
+from app.models.base_model import CrudType, DatabaseType
+from app.auth.auth import get_current_user
 import logging
 
-from model.base_model import DatabaseType
-
-
-logging.basicConfig(level=logging.INFO)
-
-
-app = FastAPI()
-
-
-# 🔒 Dictionary to track table locks (user → table)
-table_locks = {}  # { "table_name": "username" }
+# In-memory dictionary to track table locks
+table_locks = {}
 
 def get_db_model(table_name: str):
     """Fetch the database model and check if the table is locked."""
@@ -29,12 +16,26 @@ def get_db_model(table_name: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 class APIController:
-    """Handles API routing for CRUD operations with authentication and table locking."""
+    """API Controller that registers all CRUD endpoints with table locking support."""
 
-    # ✅ CREATE (Requires Authentication)
-    @staticmethod
-    @app.post("/{table_name}/create")
-    def create_entry(table_name: str, data: dict, db: DatabaseModel = Depends(get_db_model), user: dict = Depends(get_current_user)):
+    def __init__(self):
+        self.router = APIRouter()
+        self._register_routes()
+
+    def _register_routes(self):
+        """Registers all routes to the APIRouter."""
+        self.router.post("/{table_name}/create")(self.create_entry)
+        self.router.get("/{table_name}/read")(self.read_entries)
+        self.router.put("/{table_name}/update/{entry_id}")(self.update_entry)
+        self.router.delete("/{table_name}/delete/{entry_id}")(self.delete_entry)
+        self.router.post("/{table_name}/lock")(self.lock_table)
+        self.router.post("/{table_name}/unlock")(self.unlock_table)
+
+    def create_entry(
+        self, table_name: str, data: dict, 
+        db: DatabaseModel = Depends(get_db_model), 
+        user: dict = Depends(get_current_user)
+    ):
         """Creates a new record in the table (Requires authentication)."""
         try:
             db.execute(CrudType.CREATE, **data)
@@ -43,22 +44,24 @@ class APIController:
             logging.error(f"Error creating entry in `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    # ✅ READ (Requires Authentication)
-    @staticmethod
-    @app.get("/{table_name}/read")
-    def read_entries(table_name: str, db: DatabaseModel = Depends(get_db_model), user: dict = Depends(get_current_user)):
+    def read_entries(
+        self, table_name: str, 
+        db: DatabaseModel = Depends(get_db_model), 
+        user: dict = Depends(get_current_user)
+    ):
         """Reads all records from the table (Requires authentication)."""
         try:
             df = db.execute(CrudType.READ)
-            return df.to_dict(orient="records")
+            return df.to_dict(orient="records") # type: ignore
         except Exception as e:
             logging.error(f"Error reading `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    # ✅ UPDATE (Requires Authentication & Table Lock Check)
-    @staticmethod
-    @app.put("/{table_name}/update/{entry_id}")
-    def update_entry(table_name: str, entry_id: int, data: dict, db: DatabaseModel = Depends(get_db_model), user: dict = Depends(get_current_user)):
+    def update_entry(
+        self, table_name: str, entry_id: int, data: dict, 
+        db: DatabaseModel = Depends(get_db_model), 
+        user: dict = Depends(get_current_user)
+    ):
         """Updates an entry (Requires authentication and table lock)."""
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
@@ -70,10 +73,13 @@ class APIController:
             logging.error(f"Error updating `{table_name}` entry `{entry_id}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    # ✅ DELETE (Requires Authentication & Table Lock Check)
-    @staticmethod
-    @app.delete("/{table_name}/delete/{entry_id}")
-    def delete_entry(table_name: str, entry_id: int, db: DatabaseModel = Depends(get_db_model), user: dict = Depends(get_current_user)):
+    def delete_entry(
+        self, table_name: str, entry_id: int, 
+        db: DatabaseModel = Depends(get_db_model), 
+        user: dict = Depends(get_current_user)
+    ):
+
+        print(f"user type: {type(user)}, value: {user}")  # 🔥 Debugging user
         """Deletes an entry (Requires authentication and table lock)."""
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
@@ -84,23 +90,16 @@ class APIController:
         except Exception as e:
             logging.error(f"Error deleting `{table_name}` entry `{entry_id}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
-        
-        
-    # ✅ LOCK TABLE (New Feature)
-    @staticmethod
-    @app.post("/{table_name}/lock")
-    def lock_table(table_name: str, user: dict = Depends(get_current_user)):
+
+    def lock_table(self, table_name: str, user: dict = Depends(get_current_user)):
         """Locks a table so only the current user can edit it."""
         if table_name in table_locks:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is already locked by `{table_locks[table_name]}`")
-        
+
         table_locks[table_name] = user["username"]
         return {"message": f"🔒 Table `{table_name}` is now locked by `{user['username']}`"}
 
-    # ✅ UNLOCK TABLE (New Feature)
-    @staticmethod
-    @app.post("/{table_name}/unlock")
-    def unlock_table(table_name: str, user: dict = Depends(get_current_user)):
+    def unlock_table(self, table_name: str, user: dict = Depends(get_current_user)):
         """Unlocks a table, allowing other users to edit it."""
         if table_locks.get(table_name) != user["username"]:
             raise HTTPException(status_code=403, detail="❌ You can only unlock tables you locked.")
