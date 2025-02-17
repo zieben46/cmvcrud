@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 # from jose import JWTError  --kills it
 # from jose import jwt, JWTError --kills it
-# from jose import jwt
+from jose import jwt
 from datetime import datetime, timedelta
 from typing import Optional
 

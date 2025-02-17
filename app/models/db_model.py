@@ -14,28 +14,53 @@ class DatabaseModel:
     """Handles direct interaction with the database (Data Model Layer)."""
 
     def __init__(self, database: DatabaseType, table_name: str):
-        """Initialize the database model and determine the SCD type."""
-        if database == DatabaseType.POSTGRES:
-            config = PostgresConfig(os.getenv)
-            url = config.get_url()
-        else:
-            raise ValueError(f"⚠️ Unsupported database type: {database}")
-
+        """Initialize the database model."""
         self.table_name = table_name
-        self.engine = create_engine(url)
+        self.engine = self._create_engine(database)
         self.session = sessionmaker(bind=self.engine)()
 
+        self._load_metadata()
+        self.table = self._get_table(table_name)
+        self.scd_type = self._get_scd_type()
+        self.strategy = self._select_strategy()
+
+
+    def _create_engine(self, database: DatabaseType):
+        """Create and return the database engine."""
+        if database == DatabaseType.POSTGRES:
+            config = PostgresConfig(os.getenv)
+            return create_engine(config.get_url())
+        raise ValueError(f"⚠️ Unsupported database type: {database}")
+    
+    def _load_metadata(self):
+        """Reflect database schema if not already loaded."""
         if not metadata.tables:
             metadata.reflect(bind=self.engine)
 
-        self.table: Optional[Table] = metadata.tables.get(table_name)
-
-        if self.table is None:
+    def _get_table(self, table_name: str) -> Table:
+        """Fetch the table object from metadata."""
+        table = metadata.tables.get(table_name)
+        if table is None:
             raise ValueError(f"⚠️ Table `{table_name}` does not exist in the database.")
+        return table
+    
+    def _select_strategy(self):
+        """Select the appropriate SCD strategy."""
+        return SCDStrategyFactory.get_strategy(self.scd_type, self.table)
+    
+    def _get_scd_type(self) -> SCDType:
+        # """Fetch the SCD type for this table from `ALL_TABLES_DATA`."""
+        # with self.engine.connect() as conn:
+        #     query = select(metadata.tables["ALL_TABLES_DATA"].c.scd_type).where(
+        #         metadata.tables["ALL_TABLES_DATA"].c.table_name == self.table_name
+        #     )
+        #     result = conn.execute(query).fetchone()
 
-        self.scd_type = self._get_scd_type()
-        self.strategy = SCDStrategyFactory.get_strategy(self.scd_type, self.table)
-
+        # if result is None:
+        #     raise ValueError(f"⚠️ No SCD type defined for `{self.table_name}` in `ALL_TABLES_DATA`.")
+        return SCDType.SCDTYPE1
+        # return SCDType(result[0])
+    
     def execute(self, operation: CrudType, **kwargs):
         """Executes CRUD operations using the selected strategy."""
         with self.engine.connect() as conn:
@@ -49,17 +74,5 @@ class DatabaseModel:
                 return self.strategy.delete(conn, **kwargs)
             else:
                 raise ValueError(f"Invalid CRUD operation: {operation}")
-            
-
-    def _get_scd_type(self) -> SCDType:
-        """Fetch the SCD type for this table from `ALL_TABLES_DATA`."""
-        # with self.engine.connect() as conn:
-        #     query = select(metadata.tables["ALL_TABLES_DATA"].c.scd_type).where(
-        #         metadata.tables["ALL_TABLES_DATA"].c.table_name == self.table_name
-        #     )
-        #     result = conn.execute(query).fetchone()
-
-        # if result is None:
-        #     raise ValueError(f"⚠️ No SCD type defined for `{self.table_name}` in `ALL_TABLES_DATA`.")
-        return SCDType.SCDTYPE1
-        return SCDType(result[0])
+        
+    
