@@ -107,8 +107,6 @@ make start
 
 🚀 You can interact with it using Swagger UI or HTTP requests.
 
-Would you like to **Dockerize** the application for deployment? 🐳
-
 
 🔹 1️⃣ Obtain Authentication Token
 =============================
@@ -128,7 +126,7 @@ curl -X POST "http://127.0.0.1:8000/token" \
 }
 ```
 
-=============================
+
 🔹 2️⃣ Lock a Table (Only One User Can Lock at a Time)
 =============================
 
@@ -142,7 +140,7 @@ curl -X POST "http://127.0.0.1:8000/person/lock" \
     "message": "🔒 Table `person` is now locked by `admin`"
 }
 
-=============================
+
 🔹 3️⃣ Attempting to Update While Table is Locked
 =============================
 
@@ -158,7 +156,7 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \
     "detail": "❌ Table `person` is locked by `admin`"
 }
 
-=============================
+
 🔹 4️⃣ Unlock the Table (Only the Locking User Can Unlock)
 =============================
 
@@ -172,7 +170,7 @@ curl -X POST "http://127.0.0.1:8000/person/unlock" \
     "message": "🔓 Table `person` is now unlocked."
 }
 
-=============================
+
 🔹 5️⃣ Create a New Record
 =============================
 
@@ -188,7 +186,7 @@ curl -X POST "http://127.0.0.1:8000/person/create" \
     "message": "✅ Entry added to `person` by `admin`"
 }
 
-=============================
+
 🔹 6️⃣ Read All Entries
 =============================
 
@@ -203,7 +201,7 @@ curl -X GET "http://127.0.0.1:8000/person/read" \
     {"id": 2, "name": "Bob", "age": 25}
 ]
 
-=============================
+
 🔹 7️⃣ Update an Entry (After Unlocking)
 =============================
 ```bash
@@ -218,7 +216,7 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \
     "message": "🔄 Entry `1` updated in `person` by `admin`"
 }
 
-=============================
+
 🔹 8️⃣ Delete an Entry (Only Admins Can Delete)
 =============================
 ```bash
@@ -231,7 +229,7 @@ curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \
     "message": "🗑️ Entry `2` deleted from `person` by `admin`"
 }
 
-=============================
+
 🔹 9️⃣ Download Data as a CSV
 =============================
 ```bash
@@ -239,7 +237,8 @@ curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \
 curl -X GET "http://127.0.0.1:8000/person/download" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
-=============================
+
+
 🔹 1️⃣0️⃣ Full Example Using Python
 =============================
 
