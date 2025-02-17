@@ -121,7 +121,7 @@ Would you like to **Dockerize** the application for deployment? 🐳
 curl -X POST "http://127.0.0.1:8000/token" \
      -H "Content-Type: application/x-www-form-urlencoded" \
      -d "username=admin&password=admin123"
-
+```md
 # Response (JWT Token)
 {
     "access_token": "your_token_here",
@@ -136,7 +136,7 @@ curl -X POST "http://127.0.0.1:8000/token" \
 ```bash
 curl -X POST "http://127.0.0.1:8000/person/lock" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
+```md
 # Response
 {
     "message": "🔒 Table `person` is now locked by `admin`"
@@ -152,7 +152,7 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \
      -H "Authorization: Bearer OTHER_USER_ACCESS_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"name": "Bob Updated"}'
-
+```md
 # Response (Blocked)
 {
     "detail": "❌ Table `person` is locked by `admin`"
@@ -166,7 +166,7 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \
 ```bash
 curl -X POST "http://127.0.0.1:8000/person/unlock" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
+```md
 # Response
 {
     "message": "🔓 Table `person` is now unlocked."
@@ -177,11 +177,12 @@ curl -X POST "http://127.0.0.1:8000/person/unlock" \
 =============================
 
 # Add a New Entry
+```bash
 curl -X POST "http://127.0.0.1:8000/person/create" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"name": "Alice", "age": 30}'
-
+```md
 # Response
 {
     "message": "✅ Entry added to `person` by `admin`"
@@ -192,9 +193,10 @@ curl -X POST "http://127.0.0.1:8000/person/create" \
 =============================
 
 # Fetch All Data
+```bash
 curl -X GET "http://127.0.0.1:8000/person/read" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
+```md
 # Response
 [
     {"id": 1, "name": "Alice", "age": 30},
@@ -204,13 +206,13 @@ curl -X GET "http://127.0.0.1:8000/person/read" \
 =============================
 🔹 7️⃣ Update an Entry (After Unlocking)
 =============================
-
+```bash
 # Update Alice’s Age
 curl -X PUT "http://127.0.0.1:8000/person/update/1" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"age": 31}'
-
+```md
 # Response
 {
     "message": "🔄 Entry `1` updated in `person` by `admin`"
@@ -219,11 +221,11 @@ curl -X PUT "http://127.0.0.1:8000/person/update/1" \
 =============================
 🔹 8️⃣ Delete an Entry (Only Admins Can Delete)
 =============================
-
+```bash
 # Delete Bob’s Record
 curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
+```md
 # Response
 {
     "message": "🗑️ Entry `2` deleted from `person` by `admin`"
@@ -232,11 +234,11 @@ curl -X DELETE "http://127.0.0.1:8000/person/delete/2" \
 =============================
 🔹 9️⃣ Download Data as a CSV
 =============================
-
+```bash
 # Download CSV
 curl -X GET "http://127.0.0.1:8000/person/download" \
      -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
+```md
 =============================
 🔹 1️⃣0️⃣ Full Example Using Python
 =============================
