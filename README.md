@@ -110,9 +110,6 @@ make start
 Would you like to **Dockerize** the application for deployment? 🐳
 
 
-
-
-=============================
 🔹 1️⃣ Obtain Authentication Token
 =============================
 
