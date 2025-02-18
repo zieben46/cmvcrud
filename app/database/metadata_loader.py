@@ -1,6 +1,6 @@
 from sqlalchemy import Table, select
-from app.models.base_model import DatabaseType, SCDType
-from app.models.db_scd_strategies import SCDStrategyFactory
+from app.config.enums import DatabaseType, SCDType
+from app.database.scd.db_scd_strategies import SCDStrategyFactory
 from typing import Optional
 
 class DatabaseMetadata:

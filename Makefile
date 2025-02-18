@@ -17,5 +17,5 @@ run:
 
 .PHONY: start
 
-start:
+start-api:
 	uvicorn main:app --reload
