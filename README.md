@@ -262,3 +262,70 @@ print(resp.json())  # Should work because we locked it
 resp = requests.post(f"{BASE_URL}/person/unlock", headers=headers)
 print(resp.json())
 
+=============================
+=============================
+=============================
+Front-End interaction
+✅ Table Locking 
+=============================
+=============================
+=============================
+```python
+
+
+import pandas as pd
+
+def calculate_deltas(df_original: pd.DataFrame, df_modified: pd.DataFrame, primary_keys: list):
+    """Compares original and modified DataFrames to detect inserts, updates, and deletes."""
+
+    # Ensure primary keys exist
+    if not set(primary_keys).issubset(df_original.columns) or not set(primary_keys).issubset(df_modified.columns):
+        raise ValueError("❌ Primary keys must be present in both DataFrames.")
+
+    # 🔹 Step 1: Detect Inserts (Rows in `df_modified` but not in `df_original`)
+    df_merged = df_modified.merge(df_original, on=primary_keys, how='left', indicator=True)
+    inserts = df_merged[df_merged['_merge'] == 'left_only'].drop(columns=['_merge'])
+
+    # 🔹 Step 2: Detect Deletes (Rows in `df_original` but not in `df_modified`)
+    df_merged = df_original.merge(df_modified, on=primary_keys, how='left', indicator=True)
+    deletes = df_merged[df_merged['_merge'] == 'left_only'].drop(columns=['_merge'])
+
+    # 🔹 Step 3: Detect Updates (Rows where values changed but primary keys match)
+    common_keys = df_original.merge(df_modified, on=primary_keys, how='inner')
+    updated_rows = common_keys[df_original.set_index(primary_keys).loc[common_keys.index].ne(
+        df_modified.set_index(primary_keys).loc[common_keys.index]
+    ).any(axis=1)]
+
+    return inserts.to_dict(orient="records"), updated_rows.to_dict(orient="records"), deletes.to_dict(orient="records")
+
+
+import streamlit as st
+import requests
+
+st.title("Table Editor")
+
+# 🔹 Step 1: Load Data from API
+table_name = "your_table"
+response = requests.get(f"http://127.0.0.1:8000/{table_name}/read")
+df_original = pd.DataFrame(response.json())  # Save the original state
+df_modified = df_original.copy()
+
+# 🔹 Step 2: Allow User to Edit Data
+edited_df = st.data_editor(df_modified)
+
+# 🔹 Step 3: Compute Deltas on Submit
+if st.button("Submit Changes"):
+    inserts, updates, deletes = calculate_deltas(df_original, edited_df, primary_keys=["id"])
+
+    # 🔹 Step 4: Send Delta to FastAPI Backend
+    if inserts:
+        requests.post(f"http://127.0.0.1:8000/{table_name}/create", json=inserts)
+    if updates:
+        requests.put(f"http://127.0.0.1:8000/{table_name}/update", json=updates)
+    if deletes:
+        requests.delete(f"http://127.0.0.1:8000/{table_name}/delete", json=deletes)
+
+    st.success("✅ Changes successfully submitted!")
+
+
+```
