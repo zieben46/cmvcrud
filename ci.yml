@@ -1,0 +1,51 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main  # ✅ Deploy when pushing to `main`
+      - dev   # ✅ Deploy to staging when pushing to `dev`
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run database migrations  # 🔹 Ensures DB schema is correct
+        run: alembic upgrade head
+      - name: Run tests
+        run: pytest app/ integration_tests/ --asyncio-mode=auto
+
+  deploy:
+    needs: test  # ✅ Only deploy if tests pass
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to Production
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "🚀 Deploying to production..."
+          ssh user@server "cd /path/to/app && git pull && systemctl restart myapp"
+
+      - name: Deploy to Staging
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          echo "🚀 Deploying to staging..."
+          ssh user@staging-server "cd /path/to/app && git pull && systemctl restart myapp"
