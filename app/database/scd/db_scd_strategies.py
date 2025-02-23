@@ -56,8 +56,8 @@ class SCDType1Strategy(SCDStrategy):
     """Handles CRUD operations for SCD Type 1 (Full Overwrite)."""
 
     def create(self, session: Session, data: List[Dict]):
-        session.execute(self.table.insert(), data)  # Batch insert
-        session.commit()
+        """Batch insert records into the table."""
+        session.execute(self.table.insert(), data)  # ✅ No commit()
 
     def read(self, session: Session):
         result = session.execute(self.table.select()).fetchall()
@@ -65,43 +65,29 @@ class SCDType1Strategy(SCDStrategy):
 
     def update(self, session: Session, data: List[Dict]):
         """Updates multiple records in the table using a session."""
-        try:
-            for entry in data:
-                filters = {pk: entry.pop(pk, None) for pk in self.primary_keys}
+        for entry in data:
+            filters = {pk: entry.pop(pk, None) for pk in self.primary_keys}
+            if None in filters.values():
+                raise ValueError(f"Each update must include all primary key(s): {self.primary_keys}")
 
-                if None in filters.values():
-                    raise ValueError(f"Each update must include all primary key(s): {self.primary_keys}")
+            update_query = self.table.update().where(
+                *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
+            ).values(**entry)
 
-                update_query = self.table.update().where(
-                    *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
-                ).values(**entry)
-
-                session.execute(update_query)
-
-            session.commit()  # Commit once after all updates
-        except Exception as e:
-            session.rollback()  # Rollback on failure
-            raise e
+            session.execute(update_query)  # ✅ No commit()
 
     def delete(self, session: Session, data: List[Dict]):
         """Deletes multiple records from the table using a session."""
-        try:
-            for entry in data:
-                filters = {pk: entry.get(pk) for pk in self.primary_keys}
+        for entry in data:
+            filters = {pk: entry.get(pk) for pk in self.primary_keys}
+            if None in filters.values():
+                raise ValueError(f"Each delete must include all primary key(s): {self.primary_keys}")
 
-                if None in filters.values():
-                    raise ValueError(f"Each delete must include all primary key(s): {self.primary_keys}")
+            delete_query = self.table.delete().where(
+                *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
+            )
 
-                delete_query = self.table.delete().where(
-                    *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
-                )
-
-                session.execute(delete_query)
-
-            session.commit()  # Commit once after all deletes
-        except Exception as e:
-            session.rollback()  # Rollback on failure
-            raise e
+            session.execute(delete_query)  # ✅ No commit()
 
 
 ###################################################################################
@@ -110,61 +96,54 @@ class SCDType2Strategy(SCDStrategy):
     """Handles CRUD operations for SCD Type 2 (Append-Only, Historical Tracking)."""
 
     def create(self, session: Session, data: List[Dict]):
+        """Inserts new records with timestamps."""
+        timestamp_now = pd.Timestamp.now()
         for entry in data:
-            entry["on_time"] = pd.Timestamp.now()
-        session.execute(self.table.insert(), data)
-        session.commit()
+            entry["on_time"] = timestamp_now
+        session.execute(self.table.insert(), data)  # ✅ No commit()
 
     def read(self, session: Session):
-        result = session.execute(self.table.select()).fetchall()
-        records = [dict(row._mapping) for row in result]
-        if records and "off_time" in records[0]:  
-            records = [record for record in records if record["off_time"] is None]
-        return records
+        """Reads active records (off_time IS NULL)."""
+        query = self.table.select().where(self.table.c.off_time.is_(None))
+        result = session.execute(query).fetchall()
+        return [dict(row._mapping) for row in result]
 
     def update(self, session: Session, data: List[Dict]):
         """SCD Type 2 Update: Soft-closes previous records, then inserts new ones."""
-        try:
-            for entry in data:
-                filters = {pk: entry.get(pk) for pk in self.primary_keys}
-                if None in filters.values():
-                    raise ValueError(f"Each update must include all primary key(s): {self.primary_keys}")
+        for entry in data:
+            filters = {pk: entry.get(pk) for pk in self.primary_keys}
+            if None in filters.values():
+                raise ValueError(f"Each update must include all primary key(s): {self.primary_keys}")
+
+            if data:
+                timestamp_now = pd.Timestamp.now()
 
                 # Soft close the previous record
                 session.execute(
                     self.table.update().where(
                         *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
-                    ).values(off_time=pd.Timestamp.now())
+                    ).values(off_time=timestamp_now)
                 )
 
-                # Insert the new record with a fresh timestamp
-                entry["on_time"] = pd.Timestamp.now()
-                session.execute(self.table.insert().values(**entry))
+                # Insert the new record
+                for entry in data:
+                    entry["on_time"] = timestamp_now
+                    session.execute(self.table.insert().values(**entry))  # ✅ No commit()
 
-            session.commit()  # Commit once after all operations
-        except Exception as e:
-            session.rollback()  # Rollback on failure
-            raise e
 
     def delete(self, session: Session, data: List[Dict]):
         """SCD Type 2 Delete: Marks the record as inactive instead of deleting."""
-        try:
-            for entry in data:
-                filters = {pk: entry.get(pk) for pk in self.primary_keys}
-                if None in filters.values():
-                    raise ValueError(f"Each delete must include all primary key(s): {self.primary_keys}")
+        for entry in data:
+            filters = {pk: entry.get(pk) for pk in self.primary_keys}
+            if None in filters.values():
+                raise ValueError(f"Each delete must include all primary key(s): {self.primary_keys}")
 
-                session.execute(
-                    self.table.update().where(
-                        *[self.table.c[pk] == filters[pk] for pk in self.primary_keys]
-                    ).values(off_time=pd.Timestamp.now())
-                )
-
-            session.commit()  # Commit once after all deletes
-        except Exception as e:
-            session.rollback()  # Rollback on failure
-            raise e
-
+            session.execute(
+                self.table.update().where(
+                    *[self.table.c[pk] == filters[pk] for pk in self.primary_keys],
+                    self.table.c.off_time.is_(None)  # ✅ Only update active records
+                ).values(off_time=pd.Timestamp.now())
+)
 
 ###################################################################################
 # 🔹 Factory Class
@@ -174,6 +153,9 @@ class SCDStrategyFactory:
     @staticmethod
     def get_scdstrategy(scd_type: SCDType, table: Table) -> SCDStrategy:
         """Returns the appropriate SCD strategy instance."""
+        if not isinstance(table, Table):
+            raise TypeError("⚠️ Invalid table object. Must be an instance of `sqlalchemy.Table`.")
+
         scdstrategy_map = {
             SCDType.SCDTYPE0: SCDType0Strategy,
             SCDType.SCDTYPE1: SCDType1Strategy,
@@ -184,6 +166,3 @@ class SCDStrategyFactory:
             raise ValueError(f"⚠️ Unsupported SCD type: {scd_type}")
 
         return scdstrategy_map[scd_type](table)
-    
-
-  

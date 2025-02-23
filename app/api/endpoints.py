@@ -49,7 +49,7 @@ class TableAPI:
         user: dict = Depends(get_current_user)
     ):
         """Creates multiple new records in the table (Requires authentication)."""
-        db = self.db_session_provider()
+        db: Session = self.db_session_provider()
         try:
             model = self.model_type(db, table_name)
             model.execute(CrudType.CREATE, data)
@@ -81,7 +81,7 @@ class TableAPI:
         user: dict = Depends(get_current_user)
     ):
         """Updates multiple entries (Requires authentication and table lock)."""
-        db = self.db_session_provider() # type: ignore
+        db: Session = self.db_session_provider() # type: ignore
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
 
@@ -102,7 +102,7 @@ class TableAPI:
         user: dict = Depends(get_current_user)
     ):
         """Deletes multiple entries (Requires authentication and table lock)."""
-        db = self.db_session_provider() # type: ignore
+        db: Session = self.db_session_provider() # type: ignore
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
         try:
@@ -181,8 +181,7 @@ class TableAPI:
         return {"message": f"🔒 Welcome, {user['username']}! You have `{user['role']}` permissions."}
     
     def stream_entries(
-        self, table_name: str,  
-        db: Session = Depends()
+        self, table_name: str
     ):
         """Streams records from a table to avoid large payloads and high memory usage."""
         db = self.db_session_provider() # type: ignore

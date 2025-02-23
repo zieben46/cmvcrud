@@ -12,6 +12,10 @@ from app.database.metadata_loader import DatabaseMetadata
 
 import os
 
+#   metadata_cache = MetaData()  # ✅ Static metadata cach
+
+# self.metadata = self.__class__.metadata_cache  # ✅ Use cached metadata
+
 class DatabaseModel:
     """Handles database interactions and applies SCD strategies."""
 
@@ -46,17 +50,7 @@ class DatabaseModel:
     def _get_scd_type(self) -> SCDType:
         """Determine SCD type dynamically (for now, default to Type 1)."""
         return SCDType.SCDTYPE1  # Future: Fetch from metadata
-
-    def _select_scdstrategy(self, scd_type: SCDType):
-        """Returns the correct SCD strategy for the table."""
-        strategy_map = {
-            SCDType.SCDTYPE0: SCDType0Strategy,
-            SCDType.SCDTYPE1: SCDType1Strategy,
-            SCDType.SCDTYPE2: SCDType2Strategy
-
-        }
-        # return strategy_map[scd_type](self.db)
-        return SCDType1Strategy
+    
 
     def execute(self, operation: CrudType, data: List[Dict]):
         """Executes a CRUD operation using the selected SCD strategy."""
