@@ -22,9 +22,12 @@ table_locks = {}
 class TableAPI:
     """Handles table-based CRUD operations with table locking support."""
 
-    def __init__(self):
+    def __init__(self, model_type=DatabaseModel, db_session_provider=get_db):
         self.router = APIRouter()
+        self.model_type = model_type
+        self.db_session_provider = db_session_provider
         self._register_routes()
+
 
     def _register_routes(self):
         """Registers all API endpoints."""
@@ -42,13 +45,13 @@ class TableAPI:
     def create_entries(
         self, 
         table_name: str, 
-        data: List[Dict],  
-        db: Session = Depends(get_db),
+        data: List[Dict],
         user: dict = Depends(get_current_user)
     ):
         """Creates multiple new records in the table (Requires authentication)."""
+        db = self.db_session_provider()
         try:
-            model = DatabaseModel(db, table_name)
+            model = self.model_type(db, table_name)
             model.execute(CrudType.CREATE, data)
             db.commit()  # ✅ Commit transaction
             return {"message": f"✅ {len(data)} entries added to `{table_name}` by `{user['username']}`"}
@@ -60,12 +63,12 @@ class TableAPI:
     def read_entries(
         self, 
         table_name: str,  
-        db: Session = Depends(get_db),
         user: dict = Depends(get_current_user)
     ):
         """Reads all records from the table (Requires authentication)."""
+        db = self.db_session_provider() # type: ignore
         try:
-            model = DatabaseModel(db, table_name) 
+            model = self.model_type(db, table_name) 
             return model.execute(CrudType.READ, [{}])
         except Exception as e:
             logging.error(f"Error reading `{table_name}`: {str(e)}")
@@ -75,15 +78,15 @@ class TableAPI:
         self, 
         table_name: str,
         data: List[Dict],  
-        db: Session = Depends(get_db),
         user: dict = Depends(get_current_user)
     ):
         """Updates multiple entries (Requires authentication and table lock)."""
+        db = self.db_session_provider() # type: ignore
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
 
         try:
-            model = DatabaseModel(db, table_name)
+            model = self.model_type(db, table_name)
             model.execute(CrudType.UPDATE, data)
             db.commit()  # ✅ Commit transaction
             return {"message": f"🔄 Updated `{len(data)}` entries in `{table_name}` by `{user['username']}`"}
@@ -95,15 +98,15 @@ class TableAPI:
     def delete_entries(
         self, 
         table_name: str, 
-        data: List[Dict],  
-        db: Session = Depends(get_db),
+        data: List[Dict],
         user: dict = Depends(get_current_user)
     ):
         """Deletes multiple entries (Requires authentication and table lock)."""
+        db = self.db_session_provider() # type: ignore
         if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
         try:
-            model = DatabaseModel(db, table_name)
+            model = self.model_type(db, table_name)
             model.execute(CrudType.DELETE, data)
             db.commit()  # ✅ Commit transaction
             return {"message": f"🗑️ Deleted `{len(data)}` entries from `{table_name}` by `{user['username']}`"}
@@ -112,7 +115,7 @@ class TableAPI:
             logging.error(f"Error deleting `{table_name}` entries: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    def lock_table(
+    def lock_table2(
         self, 
         table_name: str, 
         user: dict = Depends(get_current_user)
@@ -122,6 +125,25 @@ class TableAPI:
             raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is already locked by `{table_locks[table_name]}`")
         table_locks[table_name] = user["username"]
         return {"message": f"🔒 Table `{table_name}` is now locked by `{user['username']}`"}
+    
+
+    def lock_table(self, table_name: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+        """Locks a table in the master table (DB-persistent locks)."""
+        existing_lock = db.execute("SELECT locked_by FROM master_table_locks WHERE table_name = :table_name", # type: ignore
+                                    {"table_name": table_name}
+        ).fetchone() # type: ignore
+
+        if existing_lock:
+            raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is already locked by `{existing_lock[0]}`")
+
+        db.execute(
+            "INSERT INTO master_table_locks (table_name, locked_by) VALUES (:table_name, :user)", # type: ignore
+            {"table_name": table_name, "user": user["username"]}
+        ) # type: ignore
+        db.commit()
+        
+        return {"message": f"🔒 Table `{table_name}` is now locked by `{user['username']}`"}
+    
 
     def unlock_table(
         self, 
@@ -160,13 +182,13 @@ class TableAPI:
     
     def stream_entries(
         self, table_name: str,  
-        db: Session = Depends(get_db)
+        db: Session = Depends()
     ):
         """Streams records from a table to avoid large payloads and high memory usage."""
-
+        db = self.db_session_provider() # type: ignore
         def data_generator():
             """Generator function that yields database records one by one as JSON."""
-            model = DatabaseModel(db, table_name)
+            model = self.model_type(db, table_name)
             result = model.execute(CrudType.READ, [{}]) or []
             for row in result:
                 yield json.dumps(row) + "\n"  # ✅ Convert row to JSON string and send it incrementally

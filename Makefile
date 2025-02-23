@@ -3,7 +3,7 @@
 VENV_PYTHON := ../.venv/Scripts/python
 
 test:
-	$(VENV_PYTHON) -B -m pytest
+	CONFIG_ENV=TEST $(VENV_PYTHON) -B -m pytest
 
 test-sim:
 	$(VENV_PYTHON) -m pytest app/tests/simulation_tests/sim.py

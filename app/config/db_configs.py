@@ -33,4 +33,23 @@ class PostgresConfig():
             port=int(credentials["POSTGRES_PORT"]),
             database=credentials["POSTGRES_DATABASE"]
         )
-        return DATABASE_URL     
+        return DATABASE_URL
+    
+    import os
+from pydantic import BaseSettings
+
+class Settings(BaseSettings):
+    CONFIG_ENV: str = os.getenv("CONFIG_ENV", "DEV")  # Default to DEV
+
+    POSTGRES_USERNAME: str = os.getenv("POSTGRES_USERNAME", "default_user")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "default_pass")
+    POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", 5432))
+    POSTGRES_DATABASE: str = os.getenv("POSTGRES_DATABASE", "default_db")
+
+    @property
+    def database_url(self) -> str:
+        return f"postgresql://{self.POSTGRES_USERNAME}:{self.POSTGRES_PASSWORD}" \
+               f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DATABASE}"
+
+settings = Settings()
