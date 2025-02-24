@@ -15,9 +15,17 @@ from datetime import timedelta
 
 from fastapi import Form
 
+from pydantic import create_model, BaseModel
+from sqlalchemy import Table
+
 
 # In-memory dictionary to track table locks
 table_locks = {}
+
+
+def create_dynamic_model(table: Table) -> type:
+    fields = {col.name: (Optional[col.type.python_type], None) for col in table.columns}
+    return create_model(f"{table.name.capitalize()}Model", **fields)
 
 class TableAPI:
     """Handles table-based CRUD operations with table locking support."""
@@ -28,21 +36,20 @@ class TableAPI:
         self.db_session_provider = db_session_provider
         self._register_routes()
 
-
     def _register_routes(self):
         """Registers all API endpoints."""
-        self.router.post("/{table_name}/create")(self.create_entries)
-        self.router.get("/{table_name}/read")(self.read_entries)
-        self.router.put("/{table_name}/update")(self.update_entries)
-        self.router.delete("/{table_name}/delete")(self.delete_entries)
+        self.router.post("/{table_name}/records")(self.create_records)
+        self.router.get("/{table_name}/records")(self.read_records)
+        self.router.put("/{table_name}/records")(self.update_records)
+        self.router.delete("/{table_name}/records")(self.delete_records)
         self.router.post("/{table_name}/lock")(self.lock_table)
         self.router.post("/{table_name}/unlock")(self.unlock_table)
         
-        self.router.post("/token")(self.login)
-        self.router.get("/protected-route")(self.protected_route)
-        # self.router.get("/{table_name}/read")(self.stream_entries)
+        self.router.post("/auth/token")(self.login)
+        self.router.get("/auth/protected")(self.protected_route)
+        # self.router.get("/{table_name}/records/stream")(self.stream_records)
 
-    def create_entries(
+    def create_records(
         self, 
         table_name: str, 
         data: List[Dict],
@@ -52,7 +59,10 @@ class TableAPI:
         db: Session = self.db_session_provider()
         try:
             model = self.model_type(db, table_name)
-            model.execute(CrudType.CREATE, data)
+            DynamicModel = create_dynamic_model(model.table)
+            validated_data = [DynamicModel(**item).dict(exclude_unset=True) for item in data]
+            # model.execute(CrudType.CREATE, data)
+            model.execute(CrudType.CREATE, validated_data)
             db.commit()  # ✅ Commit transaction
             return {"message": f"✅ {len(data)} entries added to `{table_name}` by `{user['username']}`"}
         except Exception as e:
@@ -60,7 +70,7 @@ class TableAPI:
             logging.error(f"Error creating entries in `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    def read_entries(
+    def read_records(
         self, 
         table_name: str,  
         user: dict = Depends(get_current_user)
@@ -74,7 +84,7 @@ class TableAPI:
             logging.error(f"Error reading `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    def update_entries(
+    def update_records(
         self, 
         table_name: str,
         data: List[Dict],  
@@ -95,7 +105,7 @@ class TableAPI:
             logging.error(f"Error updating `{table_name}`: {str(e)}")
             raise HTTPException(status_code=400, detail=str(e))
 
-    def delete_entries(
+    def delete_records(
         self, 
         table_name: str, 
         data: List[Dict],
@@ -180,7 +190,7 @@ class TableAPI:
         """Example of a protected route using authentication."""
         return {"message": f"🔒 Welcome, {user['username']}! You have `{user['role']}` permissions."}
     
-    def stream_entries(
+    def stream_records(
         self, table_name: str
     ):
         """Streams records from a table to avoid large payloads and high memory usage."""

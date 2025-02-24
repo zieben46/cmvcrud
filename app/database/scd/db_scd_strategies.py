@@ -57,7 +57,9 @@ class SCDType1Strategy(SCDStrategy):
 
     def create(self, session: Session, data: List[Dict]):
         """Batch insert records into the table."""
-        session.execute(self.table.insert(), data)  # ✅ No commit()
+        # session.execute(self.table.insert(), data)  # ✅ No commit()
+        session.execute.bulk_insert_mappings(self.table, data)
+        return len(data)
 
     def read(self, session: Session):
         result = session.execute(self.table.select()).fetchall()
