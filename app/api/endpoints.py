@@ -6,6 +6,7 @@ from app.database.db_model import ReflectedTableModel
 from app.database.models import AdminBase, MasterTableLock, User
 from app.config.enums import CrudType
 from app.api.auth import get_current_user, create_access_token
+from functools import partial  # Import partial
 from app.database.connection import get_db, engine
 import logging
 import json
@@ -14,10 +15,9 @@ from datetime import timedelta
 class TableCrudAPI:
     """Handles CRUD operations for user tables with locking support."""
 
-    def __init__(self, model_type=ReflectedTableModel, db_session_provider=get_db):
+    def __init__(self, model_type=ReflectedTableModel):
         self.router = APIRouter()
         self.model_type = model_type
-        self.db_session_provider = db_session_provider
         self._register_routes()
 
     def _register_routes(self):
@@ -31,6 +31,8 @@ class TableCrudAPI:
         self.router.get("/auth/protected")(self.protected_route)
         self.router.get("/{table_name}/records/stream")(self.stream_records)
         self.router.get("/{table_name}/lock_status")(self.check_lock_status)
+
+
 
     def _check_lock(self, session: Session, table_name: str, username: str) -> None:
         lock = session.query(MasterTableLock).filter_by(table_name=table_name).first()
