@@ -329,3 +329,203 @@ if st.button("Submit Changes"):
 
 
 ```
+
+
+# Acceptance Testing with Docker for FastAPI CRUD App
+
+This guide outlines how to set up acceptance testing for a FastAPI CRUD application within a CI/CD pipeline using Docker. The approach uses Docker to launch both the FastAPI app (with your `ReflectedTableModel` CRUD logic) and a PostgreSQL database, then performs HTTP requests to verify end-to-end behavior. This setup mimics a production-like DEV environment and ensures the full stack works as expected.
+
+## Should Docker Mimic a Database Only, or Launch the API Too?
+
+### Option 1: Docker Mimics Database Only
+- **Setup**: Run just the database (e.g., PostgreSQL) in a Docker container; the app and tests run on the CI/CD runner.
+- **Pros**: Simpler Docker config, easier debugging on the runner, mimics production database setup.
+- **Cons**: Requires Python/dependencies on the runner, less portable.
+
+### Option 2: Docker Launches API + Database (Full DEV Launch)
+- **Setup**: Run both the FastAPI app and database in Docker containers, then test via HTTP requests.
+- **Pros**: Fully containerized, portable, mimics production, simplifies CI/CD runner setup (just needs Docker).
+- **Cons**: More complex Docker config, slightly slower startup.
+
+### Recommendation
+**Option 2** is preferred for acceptance testing in a CI/CD pipeline because it validates the full stack (API + database) in a reproducible, production-like way. The runner only needs Docker, and the setup doubles as a local DEV environment. We'll proceed with this approach using PostgreSQL.
+
+## Implementation Steps
+
+### Project Structure
+
+
+
+your_project/
+├── app/
+│   ├── init.py
+│   ├── main.py         # FastAPI app with ReflectedTableModel
+│   └── models.py      # ReflectedTableModel definition
+├── tests/
+│   └── test_api.py    # Acceptance tests
+├── Dockerfile         # Docker config for the app
+├── docker-compose.yml # Defines app + database services
+├── requirements.txt   # Python dependencies
+└── .github/
+    └── workflows/
+        └── ci.yml     # CI/CD pipeline
+
+
+
+
+
+### Step 1: FastAPI App (`app/main.py`)
+A minimal FastAPI app using `ReflectedTableModel` with PostgreSQL.
+
+```python
+# app/main.py
+from fastapi import FastAPI, Depends
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import Session
+from app.models import ReflectedTableModel
+
+app = FastAPI()
+
+# Database setup with PostgreSQL
+Base = declarative_base()
+class MasterTable(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(50))
+
+# Connect to PostgreSQL (provided by docker-compose)
+engine = create_engine("postgresql://user:password@db/testdb")
+Base.metadata.create_all(engine)
+
+def get_session():
+    session = Session(engine)
+    try:
+        yield session
+    finally:
+        session.close()
+
+@app.post("/users/")
+def create_user(data: dict, session: Session = Depends(get_session)):
+    model = ReflectedTableModel(session, "users", MasterTable)
+    return model.create(data)
+
+@app.get("/users/{id}")
+def read_user(id: int, session: Session = Depends(get_session)):
+    model = ReflectedTableModel(session, "users", MasterTable)
+    user = model.read(id)
+    return user if user else {"error": "Not found"}
+
+# Add other endpoints (update, delete, list) as needed...
+
+
+# Dockerfile
+FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ .
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+
+
+fastapi==0.95.0
+uvicorn==0.21.1
+sqlalchemy==2.0.0
+psycopg2-binary==2.9.5
+
+
+
+
+version: "3.8"
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"  # Optional, for local debugging
+
+
+
+
+    # tests/test_api.py
+import requests
+import time
+
+def wait_for_api():
+    """Wait for the API to be ready."""
+    for _ in range(10):
+        try:
+            response = requests.get("http://localhost:8000/users/1")
+            if response.status_code in (200, 404):
+                return True
+        except requests.ConnectionError:
+            time.sleep(1)
+    raise Exception("API not ready")
+
+def test_create_and_read_user():
+    wait_for_api()
+    payload = {"id": 1, "username": "alice"}
+    response = requests.post("http://localhost:8000/users/", json=payload)
+    assert response.status_code == 200
+    assert response.json()["username"] == "alice"
+    response = requests.get("http://localhost:8000/users/1")
+    assert response.status_code == 200
+    assert response.json()["username"] == "alice"
+
+def test_read_nonexistent_user():
+    wait_for_api()
+    response = requests.get("http://localhost:8000/users/999")
+    assert response.status_code == 200  # FastAPI returns 200 with error
+    assert "error" in response.json()
+
+
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  acceptance-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and start containers
+        run: |
+          docker-compose up -d --build
+
+      - name: Wait for API to be ready
+        run: |
+          for i in {1..10}; do
+            if curl -s http://localhost:8000/users/1; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run acceptance tests
+        run: |
+          docker run --network host python:3.9-slim bash -c "pip install requests pytest && pytest tests/test_api.py -v"
+
+      - name: Tear down containers
+        if: always()
+        run: |
+          docker-compose down

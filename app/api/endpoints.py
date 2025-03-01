@@ -1,205 +1,262 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Form
 from fastapi.responses import StreamingResponse
-from typing import List, Dict
+from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
-from app.database.db_model import DatabaseModel
+from app.database.db_model import ReflectedTableModel
+from app.database.models import AdminBase, MasterTableLock, User
 from app.config.enums import CrudType
-from app.api.auth import get_current_user
-from app.database.connection import get_db
+from app.api.auth import get_current_user, create_access_token
+from app.database.connection import get_db, engine
 import logging
 import json
-
-from app.api.auth import get_current_user
-from app.api.auth import create_access_token
 from datetime import timedelta
 
-from fastapi import Form
+class TableCrudAPI:
+    """Handles CRUD operations for user tables with locking support."""
 
-from pydantic import create_model, BaseModel
-from sqlalchemy import Table
-
-
-# In-memory dictionary to track table locks
-table_locks = {}
-
-
-def create_dynamic_model(table: Table) -> type:
-    fields = {col.name: (Optional[col.type.python_type], None) for col in table.columns}
-    return create_model(f"{table.name.capitalize()}Model", **fields)
-
-class TableAPI:
-    """Handles table-based CRUD operations with table locking support."""
-
-    def __init__(self, model_type=DatabaseModel, db_session_provider=get_db):
+    def __init__(self, model_type=ReflectedTableModel, db_session_provider=get_db):
         self.router = APIRouter()
         self.model_type = model_type
         self.db_session_provider = db_session_provider
         self._register_routes()
 
     def _register_routes(self):
-        """Registers all API endpoints."""
         self.router.post("/{table_name}/records")(self.create_records)
         self.router.get("/{table_name}/records")(self.read_records)
         self.router.put("/{table_name}/records")(self.update_records)
         self.router.delete("/{table_name}/records")(self.delete_records)
         self.router.post("/{table_name}/lock")(self.lock_table)
         self.router.post("/{table_name}/unlock")(self.unlock_table)
-        
         self.router.post("/auth/token")(self.login)
         self.router.get("/auth/protected")(self.protected_route)
-        # self.router.get("/{table_name}/records/stream")(self.stream_records)
+        self.router.get("/{table_name}/records/stream")(self.stream_records)
+        self.router.get("/{table_name}/lock_status")(self.check_lock_status)
+
+    def _check_lock(self, session: Session, table_name: str, username: str) -> None:
+        lock = session.query(MasterTableLock).filter_by(table_name=table_name).first()
+        if lock and lock.locked_by != username:
+            raise HTTPException(status_code=403, detail=f"Table `{table_name}` is locked by `{lock.locked_by}`")
+
+    def _get_table_specs(self, session: Session, table_name: str) -> Dict[str, Any]:
+        master = session.query(AdminBase.classes.master_table).filter_by(table_name=table_name).first()
+        if not master:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table '{table_name}' not found in master_table"
+            )
+        lock = session.query(MasterTableLock).filter_by(table_name=table_name).first()
+        return {
+            'table_name': table_name,
+            'is_locked': bool(lock),
+            'locked_by': lock.locked_by if lock else None,
+            'scd_type': master.scd_type if master else 0,
+            'created_at': master.created_at if master else None,
+            'updated_at': lock.locked_at if lock else (master.updated_at if master else None)
+        }
 
     def create_records(
-        self, 
-        table_name: str, 
+        self,
+        table_name: str,
         data: List[Dict],
-        user: dict = Depends(get_current_user)
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
     ):
-        """Creates multiple new records in the table (Requires authentication)."""
-        db: Session = self.db_session_provider()
         try:
-            model = self.model_type(db, table_name)
-            DynamicModel = create_dynamic_model(model.table)
+            table_specs = self._get_table_specs(session, table_name)
+            self._check_lock(session, table_name, user["username"])
+            model = self.model_type(engine, table_specs)
+            DynamicModel = model.generate_table_model()
             validated_data = [DynamicModel(**item).dict(exclude_unset=True) for item in data]
-            # model.execute(CrudType.CREATE, data)
-            model.execute(CrudType.CREATE, validated_data)
-            db.commit()  # ✅ Commit transaction
-            return {"message": f"✅ {len(data)} entries added to `{table_name}` by `{user['username']}`"}
-        except Exception as e:
-            db.rollback()  # ✅ Rollback on failure
-            logging.error(f"Error creating entries in `{table_name}`: {str(e)}")
+            result = model.execute(session, CrudType.CREATE, validated_data)
+            return {"message": f"✅ {len(result)} entries added to `{table_specs['table_name']}` by `{user['username']}`"}
+        except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            logging.error(f"Server error creating entries in `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        except Exception as e:
+            logging.error(f"Unexpected error creating entries in `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
     def read_records(
-        self, 
-        table_name: str,  
-        user: dict = Depends(get_current_user)
+        self,
+        table_name: str,
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
     ):
-        """Reads all records from the table (Requires authentication)."""
-        db = self.db_session_provider() # type: ignore
         try:
-            model = self.model_type(db, table_name) 
-            return model.execute(CrudType.READ, [{}])
-        except Exception as e:
-            logging.error(f"Error reading `{table_name}`: {str(e)}")
+            table_specs = self._get_table_specs(session, table_name)
+            model = self.model_type(engine, table_specs)
+            DynamicModel = model.generate_table_model()
+            records = model.execute(session, CrudType.READ)
+            validated_records = [DynamicModel(**record).dict() for record in records]
+            return validated_records
+        except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            logging.error(f"Server error reading `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        except Exception as e:
+            logging.error(f"Unexpected error reading `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
     def update_records(
-        self, 
+        self,
         table_name: str,
-        data: List[Dict],  
-        user: dict = Depends(get_current_user)
+        data: List[Dict],
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
     ):
-        """Updates multiple entries (Requires authentication and table lock)."""
-        db: Session = self.db_session_provider() # type: ignore
-        if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
-            raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
-
         try:
-            model = self.model_type(db, table_name)
-            model.execute(CrudType.UPDATE, data)
-            db.commit()  # ✅ Commit transaction
-            return {"message": f"🔄 Updated `{len(data)}` entries in `{table_name}` by `{user['username']}`"}
-        except Exception as e:
-            db.rollback()  # ✅ Rollback on failure
-            logging.error(f"Error updating `{table_name}`: {str(e)}")
+            table_specs = self._get_table_specs(session, table_name)
+            self._check_lock(session, table_name, user["username"])
+            model = self.model_type(engine, table_specs)
+            DynamicModel = model.generate_table_model()
+            validated_data = [DynamicModel(**item).dict(exclude_unset=True) for item in data]
+            updated_count = model.execute(session, CrudType.UPDATE, validated_data)
+            return {"message": f"🔄 Updated `{updated_count}` entries in `{table_specs['table_name']}` by `{user['username']}`"}
+        except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            logging.error(f"Server error updating `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        except Exception as e:
+            logging.error(f"Unexpected error updating `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
     def delete_records(
-        self, 
-        table_name: str, 
+        self,
+        table_name: str,
         data: List[Dict],
-        user: dict = Depends(get_current_user)
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
     ):
-        """Deletes multiple entries (Requires authentication and table lock)."""
-        db: Session = self.db_session_provider() # type: ignore
-        if table_locks.get(table_name) and table_locks[table_name] != user["username"]:
-            raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is locked by `{table_locks[table_name]}`")
         try:
-            model = self.model_type(db, table_name)
-            model.execute(CrudType.DELETE, data)
-            db.commit()  # ✅ Commit transaction
-            return {"message": f"🗑️ Deleted `{len(data)}` entries from `{table_name}` by `{user['username']}`"}
-        except Exception as e:
-            db.rollback()  # ✅ Rollback on failure
-            logging.error(f"Error deleting `{table_name}` entries: {str(e)}")
+            table_specs = self._get_table_specs(session, table_name)
+            self._check_lock(session, table_name, user["username"])
+            model = self.model_type(engine, table_specs)
+            deleted_count = model.execute(session, CrudType.DELETE, data)
+            return {"message": f"🗑️ Deleted `{deleted_count}` entries from `{table_specs['table_name']}` by `{user['username']}`"}
+        except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            logging.error(f"Server error deleting `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        except Exception as e:
+            logging.error(f"Unexpected error deleting `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
-    def lock_table2(
-        self, 
-        table_name: str, 
-        user: dict = Depends(get_current_user)
+    def lock_table(
+        self,
+        table_name: str,
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
     ):
-        """Locks a table so only the current user can edit it."""
-        if table_name in table_locks:
-            raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is already locked by `{table_locks[table_name]}`")
-        table_locks[table_name] = user["username"]
-        return {"message": f"🔒 Table `{table_name}` is now locked by `{user['username']}`"}
-    
-
-    def lock_table(self, table_name: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-        """Locks a table in the master table (DB-persistent locks)."""
-        existing_lock = db.execute("SELECT locked_by FROM master_table_locks WHERE table_name = :table_name", # type: ignore
-                                    {"table_name": table_name}
-        ).fetchone() # type: ignore
-
-        if existing_lock:
-            raise HTTPException(status_code=403, detail=f"❌ Table `{table_name}` is already locked by `{existing_lock[0]}`")
-
-        db.execute(
-            "INSERT INTO master_table_locks (table_name, locked_by) VALUES (:table_name, :user)", # type: ignore
-            {"table_name": table_name, "user": user["username"]}
-        ) # type: ignore
-        db.commit()
-        
-        return {"message": f"🔒 Table `{table_name}` is now locked by `{user['username']}`"}
-    
+        try:
+            table_specs = self._get_table_specs(session, table_name)  # Validate table exists
+            lock = session.query(MasterTableLock).filter_by(table_name=table_name).first()
+            if lock:
+                raise HTTPException(status_code=403, detail=f"Table `{table_name}` is already locked by `{lock.locked_by}`")
+            
+            new_lock = MasterTableLock(table_name=table_name, locked_by=user["username"])
+            session.add(new_lock)
+            session.commit()
+            return {"message": f"🔒 Table `{table_specs['table_name']}` is now locked by `{user['username']}`"}
+        except Exception as e:
+            session.rollback()
+            logging.error(f"Error locking `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to lock table")
 
     def unlock_table(
-        self, 
+        self,
         table_name: str,
-        user: dict = Depends(get_current_user)
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
     ):
-        """Unlocks a table, allowing other users to edit it."""
-        if table_locks.get(table_name) != user["username"]:
-            raise HTTPException(status_code=403, detail="❌ You can only unlock tables you locked.")
-
-        del table_locks[table_name]
-        return {"message": f"🔓 Table `{table_name}` is now unlocked."}
+        try:
+            table_specs = self._get_table_specs(session, table_name)  # Validate table exists
+            lock = session.query(MasterTableLock).filter_by(table_name=table_name).first()
+            if not lock:
+                raise HTTPException(status_code=400, detail=f"Table `{table_name}` is not locked")
+            if lock.locked_by != user["username"]:
+                raise HTTPException(status_code=403, detail="You can only unlock tables you locked")
+            
+            session.delete(lock)
+            session.commit()
+            return {"message": f"🔓 Table `{table_specs['table_name']}` is now unlocked"}
+        except Exception as e:
+            session.rollback()
+            logging.error(f"Error unlocking `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to unlock table")
 
     def login(
-            self,
-            username: str = Form(...),
-            password: str = Form(...)
+        self,
+        username: str = Form(...),
+        password: str = Form(...),
+        session: Session = Depends(get_db)
     ):
-        """Authenticate user and return JWT token."""
-        fake_users_db = {
-            "admin": {"username": "admin", "password": "admin123", "role": "admin"},
-            "user": {"username": "user", "password": "user123", "role": "editor"},
-        }
-        user = fake_users_db.get(username)
-        if not user or user["password"] != password:
-            raise HTTPException(status_code=401, detail="❌ Invalid credentials")
-        access_token = create_access_token({"sub": username, "role": user["role"]}, expires_delta=timedelta(minutes=30))
-        return {"access_token": access_token, "token_type": "bearer"}
+        try:
+            user = session.query(User).filter_by(username=username).first()
+            if not user or user.password != password:
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+            access_token = create_access_token(
+                {"sub": user.username, "role": user.role},
+                expires_delta=timedelta(minutes=30)
+            )
+            return {"access_token": access_token, "token_type": "bearer"}
+        except Exception as e:
+            logging.error(f"Error during login for `{username}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Login failed")
 
     def protected_route(
-        self, 
+        self,
         user: dict = Depends(get_current_user)
     ):
-        """Example of a protected route using authentication."""
-        return {"message": f"🔒 Welcome, {user['username']}! You have `{user['role']}` permissions."}
-    
-    def stream_records(
-        self, table_name: str
-    ):
-        """Streams records from a table to avoid large payloads and high memory usage."""
-        db = self.db_session_provider() # type: ignore
-        def data_generator():
-            """Generator function that yields database records one by one as JSON."""
-            model = self.model_type(db, table_name)
-            result = model.execute(CrudType.READ, [{}]) or []
-            for row in result:
-                yield json.dumps(row) + "\n"  # ✅ Convert row to JSON string and send it incrementally
+        return {"message": f"🔒 Welcome, {user['username']}! You have `{user['role']}` permissions"}
 
+    def check_lock_status(
+        self,
+        table_name: str,
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
+    ):
+        try:
+            table_specs = self._get_table_specs(session, table_name)  # Validate table exists
+            lock = session.query(MasterTableLock).filter_by(table_name=table_name).first()
+            if lock:
+                return {
+                    "is_locked": True,
+                    "locked_by": lock.locked_by,
+                    "locked_at": lock.locked_at.isoformat() if lock.locked_at else None
+                }
+            return {"is_locked": False, "locked_by": None, "locked_at": None}
+        except Exception as e:
+            logging.error(f"Error checking lock status for `{table_name}`: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to check lock status")
+
+    def stream_records(
+        self,
+        table_name: str,
+        user: dict = Depends(get_current_user),
+        session: Session = Depends(get_db)
+    ):
+        def data_generator():
+            try:
+                table_specs = self._get_table_specs(session, table_name)
+                model = self.model_type(engine, table_specs)
+                DynamicModel = model.generate_table_model()
+                result = model.execute(session, CrudType.READ) or []
+                for row in result:
+                    validated_row = DynamicModel(**row).dict()
+                    yield json.dumps(validated_row) + "\n"
+            except ValueError as e:
+                yield json.dumps({"error": str(e)})
+            except RuntimeError as e:
+                logging.error(f"Server error streaming `{table_name}`: {str(e)}")
+                yield json.dumps({"error": "Internal server error"})
+            except Exception as e:
+                logging.error(f"Unexpected error streaming `{table_name}`: {str(e)}")
+                yield json.dumps({"error": "Unexpected error occurred"})
+        
         return StreamingResponse(data_generator(), media_type="application/json")

@@ -1,89 +1,62 @@
-from typing import List, Dict, Optional
-
+from sqlalchemy import create_engine
+from sqlalchemy.ext.automap import automap_base
 from sqlalchemy.orm import Session
-from sqlalchemy import event
-from typing import List, Dict
-from sqlalchemy import create_engine, MetaData, Table
-from sqlalchemy.engine import Engine, Connection
+from typing import Any, Dict, List, Optional
+from enum import Enum
+from pydantic import create_model
 
-from app.config.enums import CrudType, SCDType, DatabaseType
-from app.database.scd.db_scd_strategies import SCDStrategyFactory, SCDType0Strategy, SCDType1Strategy, SCDType2Strategy, SCDStrategyFactory
+class CrudType(Enum):
+    CREATE = "create"
+    READ = "read"
+    UPDATE = "update"
+    DELETE = "delete"
 
-from app.database.metadata_loader import DatabaseMetadata
+class ReflectedTableModel:
+    def __init__(self, engine, table_specs: Dict[str, Any]) -> None:
+        self.engine = engine
+        self.table_name = table_specs['table_name']  # Extract table_name from table_specs
+        self.is_locked = table_specs.get('is_locked', False)
+        self.locked_by = table_specs.get('locked_by', None)
+        self.scd_type = table_specs.get('scd_type', 0)
+        self.created_at = table_specs.get('created_at', None)
+        self.updated_at = table_specs.get('updated_at', None)
+        
+        # Reflect only the table from table_specs
+        self.Base = automap_base()
+        try:
+            self.Base.prepare(
+                engine,
+                reflect=True,
+                only=[self.table_name]
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to reflect table '{self.table_name}': {str(e)}")
+        
+        try:
+            self.table_class = getattr(self.Base.classes, self.table_name)
+        except AttributeError:
+            raise ValueError(f"Table '{self.table_name}' not found in the database")
 
-import os
+    def generate_table_model(self) -> type:
+        fields = {col.name: (Optional[col.type.python_type], None) for col in self.table_class.__table__.columns}
+        return create_model(f"{self.table_name.capitalize()}Model", **fields)
 
-
-
-
-class DatabaseModel:
-    metadata_cache = MetaData()  # ✅ Static metadata cach
-    """Handles database interactions and applies SCD strategies."""
-
-    def __init__(self, db: Session, table_name: str):
-        self.db = db
-        self.table_name = table_name
-        self.metadata = self.__class__.metadata_cache
-        self._load_metadata()
-        self.table = self._get_table(table_name)
-        self.scd_type = self._get_scd_type()
-        self.scdstrategy = SCDStrategyFactory.get_scdstrategy(self.scd_type, self.table)
-        # event.listen(self.db.bind, "after_create", self._on_schema_change)#sq alchem only
-
-    def _load_metadata(self):
-        engine = self.db.bind
-        if not engine:
-            raise ValueError("❌ Session is not bound to an engine!")
-        if not self.metadata.tables:  # Only reflect if cache is empty
-            self.metadata.reflect(bind=engine)
-
-    # def _on_schema_change(self, target, connection, **kw):
-    #     # logger.info("Schema change detected; refreshing metadata")
-    #     self.metadata.clear()
-    #     self.metadata.reflect(bind=self.db.bind)
-    #     self.table = self._get_table(self.table_name)
-    #     self.scdstrategy = SCDStrategyFactory.get_scdstrategy(self.scd_type, self.table)
-            
-    # Call model.refresh_metadata() after adding a table (e.g., via an API endpoint or admin action).
-    def refresh_metadata(self):
-        engine = self.db.bind
-        """Refresh the metadata cache to detect new tables."""
-        self.metadata.clear()  # Clear existing tables
-        self.metadata.reflect(bind=engine)  # type: ignore # Re-reflect
-        # self.table = self._get_table(self.table_name)  # Update table reference
-        # self.scdstrategy = SCDStrategyFactory.get_scdstrategy(self.scd_type, self.table)
-
-    @staticmethod
-    def refresh_metadata2(db: Session):
-        """Refresh the shared metadata cache to include new tables."""
-        engine = db.bind
-        if not engine:
-            raise ValueError("❌ No engine bound to session")
-        logger.info("Refreshing metadata cache")
-        DatabaseModel.metadata_cache.clear()  # Clear the shared cache
-        DatabaseModel.metadata_cache.reflect(bind=engine)  # Reload schema into shared cache
-
-    def _get_table(self, table_name: str) -> Table:
-        """Retrieve the table object from metadata."""
-        table = self.metadata.tables.get(table_name)
-        if table is None:
-            raise ValueError(f"⚠️ Table `{table_name}` does not exist in the database.")
-        return table        
-
-    def _get_scd_type(self) -> SCDType:
-        """Determine SCD type dynamically (for now, default to Type 1)."""
-        return SCDType.SCDTYPE1  # Future: Fetch from metadata
-    
-
-    def execute(self, operation: CrudType, data: List[Dict]):
-        """Executes a CRUD operation using the selected SCD strategy."""
-        if operation == CrudType.CREATE:
-            return self.scdstrategy.create(self.db, data)
-        elif operation == CrudType.READ:
-            return self.scdstrategy.read(self.db)
-        elif operation == CrudType.UPDATE:
-            return self.scdstrategy.update(self.db, data)
-        elif operation == CrudType.DELETE:
-            return self.scdstrategy.delete(self.db, data)
-        else:
-            raise ValueError(f"Invalid CRUD operation: {operation}")
+    def execute(self, session: Session, operation: CrudType, data: Optional[List[Dict]] = None) -> Any:
+        try:
+            if operation == CrudType.CREATE:
+                return self._create(session, data)
+            elif operation == CrudType.READ:
+                return self._read(session)
+            elif operation == CrudType.UPDATE:
+                return self._update(session, data)
+            elif operation == CrudType.DELETE:
+                return self._delete(session, data)
+            else:
+                raise ValueError(f"Invalid CRUD operation: {operation}")
+        except ValueError as e:
+            raise
+        except Exception as e:
+            session.rollback()
+            raise RuntimeError(f"Failed to execute {operation.value}: {str(e)}")
+        finally:
+            session.commit()

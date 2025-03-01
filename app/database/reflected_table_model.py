@@ -4,18 +4,18 @@ from sqlalchemy.orm import Session
 from typing import Any, Dict, Optional
 
 class ReflectedTableModel:
-    def __init__(self, session: Session, table_name: str, master_data_class: Any) -> None:
+    def __init__(self, session: Session, table_name: str, table_specs_class: Any) -> None:
         """
         Initialize the model with a session, table name, and master data class.
         
         Args:
             session (Session): SQLAlchemy session for database operations
             table_name (str): Name of the table to reflect
-            master_data_class (Any): SQLAlchemy table class (e.g., Master_Table) with metadata
+            table_specs_class (Any): SQLAlchemy table class (e.g., Master_Table) with metadata
         """
         self.session = session
         self.table_name = table_name
-        self.master_data_class = master_data_class
+        self.table_specs_class = table_specs_class
         
         # Reflect the database schema
         self.Base = automap_base()                                                                    #FAIL POINT: schema mismatch (db changes after reflection)
@@ -28,22 +28,22 @@ class ReflectedTableModel:
         except AttributeError:
             raise ValueError(f"Table '{table_name}' not found in the database")
         
-        # Extract additional metadata (e.g., scdtype) from master_data_class
+        # Extract additional metadata (e.g., scdtype) from table_specs_class
         self.metadata = self._extract_metadata()
 
     def _extract_metadata(self) -> Dict[str, Any]:                                                   #FAIL POINT: lacking metadata attributes
         """
-        Extract additional metadata (like scdtype) from the master_data_class.
-        This assumes master_data_class has some way to provide this info.
+        Extract additional metadata (like scdtype) from the table_specs_class.
+        This assumes table_specs_class has some way to provide this info.
         """
-        # Example: Assuming master_data_class has a method or attribute for scdtype
-        # Adjust this based on your actual master_data_class structure
+        # Example: Assuming table_specs_class has a method or attribute for scdtype
+        # Adjust this based on your actual table_specs_class structure
         metadata = {}
-        if hasattr(self.master_data_class, 'scdtype'):
-            metadata['scdtype'] = self.master_data_class.scdtype
-        elif hasattr(self.master_data_class, '__table__'):
+        if hasattr(self.table_specs_class, 'scdtype'):
+            metadata['scdtype'] = self.table_specs_class.scdtype
+        elif hasattr(self.table_specs_class, '__table__'):
             # Could inspect columns or constraints if needed
-            metadata['columns'] = {c.name: str(c.type) for c in self.master_data_class.__table__.columns}
+            metadata['columns'] = {c.name: str(c.type) for c in self.table_specs_class.__table__.columns}
         return metadata
 
     # CRUD Operations
