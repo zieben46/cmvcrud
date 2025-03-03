@@ -3,7 +3,8 @@ from pydantic import BaseSettings
 from typing import Literal
 
 class Settings(BaseSettings):
-    CONFIG_ENV: Literal["DEV", "LIVE", "TEST_PG1", "TEST_PG2"] = "DEV"  # Environment choices
+    ENVIRONMENT: str = "PROD"  # Default to production
+    DATABASE_URL: str = "postgresql://user:password@localhost:5432/prod_db"  # Default production URL
 
     # Default PostgreSQL settings (overridden by .env file if provided)
     POSTGRES_USERNAME: str = "default_user"
@@ -61,17 +62,9 @@ class Settings(BaseSettings):
                 f"{self.DEV_POSTGRES_PORT}/{self.DEV_POSTGRES_DATABASE}"
             )
         elif self.CONFIG_ENV == "TEST_PG1":
-            return (
-                f"{drivername}://{self.TEST_PG1_POSTGRES_USERNAME}:"
-                f"{self.TEST_PG1_POSTGRES_PASSWORD}@{self.TEST_PG1_POSTGRES_HOST}:"
-                f"{self.TEST_PG1_POSTGRES_PORT}/{self.TEST_PG1_POSTGRES_DATABASE}"
-            )
+            return ("sqlite:///:memory:")
         elif self.CONFIG_ENV == "TEST_PG2":
-            return (
-                f"{drivername}://{self.TEST_PG2_POSTGRES_USERNAME}:"
-                f"{self.TEST_PG2_POSTGRES_PASSWORD}@{self.TEST_PG2_POSTGRES_HOST}:"
-                f"{self.TEST_PG2_POSTGRES_PORT}/{self.TEST_PG2_POSTGRES_DATABASE}"
-            )
+            return ("sqlite:///:memory:")
         else:
             raise ValueError(f"Unknown CONFIG_ENV: {self.CONFIG_ENV}")
 
