@@ -122,6 +122,25 @@ class AdminDBOps:
             .mode("append") \
             .save()
 
+    # (CLI APPROACH)
+    def sync_table(self, target_ops, source_info, target_info):
+        subprocess.run([
+            "dbadminkit", "sync",
+            "--source", f"postgres:{source_info['table_name']}",
+            "--target", f"databricks:{target_info['table_name']}"
+        ])
+
+    # (API APPROACH)
+    def sync_table(self, target_ops, source_info, target_info):
+        requests.post(
+            f"{self.base_url}/sync",
+            json={"source": f"postgres:{source_info['table_name']}", "target": f"databricks:{target_info['table_name']}"}
+        )
+
+    def verify_sync(self, source_info, target_info):
+        # Logic to query Postgres and Databricks, compare data
+        # Could use SQL queries or `dbadminkit` commands
+        return True  # Placeholder for actual verification
 
 # xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

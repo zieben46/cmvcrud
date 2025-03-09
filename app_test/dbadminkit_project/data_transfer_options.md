@@ -1,6 +1,6 @@
 # Data Transfer Options for Databricks and Postgres in `dbadminkit.core.admin_operations.py`
 
-This document summarizes recommended methods for moving data between Databricks and Postgres in the `dbadminkit` setup, covering both **bulk transfers** (full 20M record loads) and **incremental loads** (SCD Type 2 syncs with daily batches). Each method includes a brief description, estimated speed, use case recommendation, and specific requirements beyond the existing `AdminDBOps`, `SparkEngine`, and `DBEngine` framework. Assumptions: Databricks uses Change Data Feed (CDF), and Postgres maintains an SCD Type 2 table (`emp_id`, `name`, `salary`, `is_active`, `on_date`, `off_date`).
+This document summarizes recommended methods for moving data between Databricks and Postgres in the `dbadminkit` setup, specifically within the `AdminDBOps` class located in `dbadminkit.core.admin_operations.py`. It covers both **bulk transfers** (full 20M record loads) and **incremental loads** (SCD Type 2 syncs with daily batches). Each method includes a brief description, estimated speed, use case recommendation, and specific requirements beyond the existing `AdminDBOps`, `SparkEngine`, and `DBEngine` framework. Assumptions: Databricks uses Change Data Feed (CDF), and Postgres maintains an SCD Type 2 table (`emp_id`, `name`, `salary`, `is_active`, `on_date`, `off_date`).
 
 ---
 
@@ -31,7 +31,7 @@ For initial loads or full table overwrites:
 - **Recommended When**: You want a streaming approach for full loads with incremental potential.
 - **Requirements**:
   - JDBC driver (`org.postgresql:postgresql:42.2.23`) on Databricks cluster.
-  - Running Spark cluster with sufficient resources.
+  - Running Spark cluster with sufficient resources (your Databricks cluster suffices).
   - Direct network connectivity between Databricks and Postgres.
 
 ---
@@ -46,7 +46,7 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 - **Recommended When**: You need precise incremental syncs from Databricks with CDF, fitting your batch ETL schedule.
 - **Requirements**:
   - Databricks Delta table with CDF enabled (`ALTER TABLE employees SET TBLPROPERTIES (delta.enableChangeDataFeed = true)`).
-  - Running Spark cluster with `SparkEngine`.
+  - Running Spark cluster with `SparkEngine` (your Databricks cluster works).
   - Postgres `SCDType2` handler implemented for `create`/`delete`.
 
 ### 2. CSV Export + MERGE INTO (Postgres → Databricks)
@@ -57,6 +57,7 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
   - Postgres table with `last_modified` column and trigger (e.g., `CREATE TRIGGER update_last_modified ...`).
   - S3 bucket or local storage for CSV staging.
   - Databricks Delta table support (`USING DELTA`).
+  - Running Spark cluster (your Databricks cluster suffices).
 
 ### 3. Kafka with CDF (Databricks → Postgres)
 - **Summary**: Writes CDF changes to Kafka, consumes and applies to Postgres for near real-time sync (conceptual).
@@ -64,7 +65,7 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 - **Recommended When**: You want near real-time updates instead of batch ETL, with Kafka infrastructure available.
 - **Requirements**:
   - Databricks Delta table with CDF enabled.
-  - Kafka cluster (brokers, e.g., `localhost:9092`) and topic (`employees_changes`).
+  - External Kafka cluster (brokers, e.g., `localhost:9092`) and topic (`employees_changes`)—Databricks cluster can’t host Kafka, only produce/consume.
   - `kafka-python` library installed.
   - Direct network connectivity to Postgres.
 
@@ -74,9 +75,10 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 - **Recommended When**: You need near real-time sync from Postgres to Databricks with Kafka setup.
 - **Requirements**:
   - Postgres change log table (e.g., `employees_changes`) and trigger (e.g., `log_to_kafka()`).
-  - Kafka cluster and topic (`employees_changes`).
+  - External Kafka cluster and topic (`employees_changes`)—Databricks cluster can’t host Kafka, only consume.
   - `kafka-python` library installed.
   - Databricks Delta table support.
+  - Running Spark cluster (your Databricks cluster works).
 
 ### 5. General SCD Type 2 Sync (Bidirectional)
 - **Summary**: Generic sync using timestamps, works both ways (Postgres ↔ Databricks).
@@ -85,7 +87,7 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 - **Requirements**:
   - Postgres table with `on_date`/`off_date` for SCD Type 2.
   - Databricks Delta table (if target) or Postgres SCD handler (if source).
-  - `SparkEngine` for Databricks target.
+  - `SparkEngine` for Databricks target (your Databricks cluster suffices).
 
 ---
 
@@ -93,14 +95,30 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 
 - **Bulk (20M Full Load)**:
   - **Top Choice**: **JDBC** – Fastest (~5-10 min), simplest, direct DB-to-DB transfer.
+    - **Function**: `transfer_with_jdbc`
+    - **Direction**: Unidirectional (Databricks → Postgres).
   - **Alternative**: **CSV Export + COPY** – Matches JDBC speed, file-based, good for disconnected environments.
+    - **Function**: `transfer_with_csv_copy`
+    - **Direction**: Unidirectional (Databricks → Postgres).
   - **Fallback**: **Spark Streaming** – Slower (~20-30 min), but streaming-ready for future increments.
+    - **Function**: `transfer_with_streaming`
+    - **Direction**: Unidirectional (Databricks → Postgres).
 
 - **Incremental (Daily SCD Type 2 Sync)**:
   - **Databricks → Postgres**: **Spark Streaming with CDF** – Precise, scalable, fits batch ETL (~1-5 min/batch).
+    - **Function**: `sync_databricks_to_postgres_stream`
+    - **Direction**: Unidirectional (Databricks → Postgres).
   - **Postgres → Databricks**: **CSV Export + MERGE INTO** – Simple, fast for batches (~5-10 min/batch), no middleware.
-  - **Advanced Option**: **Kafka (Bidirectional)** – Near real-time, but complex (requires Kafka setup).
+    - **Function**: `sync_postgres_to_databricks_csv`
+    - **Direction**: Unidirectional (Postgres → Databricks).
+  - **Advanced Option**: **Kafka (Bidirectional)** – Near real-time, but complex (requires separate Kafka cluster).
+    - **Functions**: 
+      - `sync_databricks_to_postgres_kafka` (Databricks → Postgres).
+      - `sync_postgres_to_databricks_kafka` (Postgres → Databricks).
+    - **Direction**: Bidirectional (separate functions for each direction).
   - **General Fallback**: **SCD Type 2 Sync** – Flexible, no extra dependencies, good for smaller datasets.
+    - **Function**: `sync_scd2_versions`
+    - **Direction**: Bidirectional (works both ways with appropriate `source_ops` and target setup).
 
 ---
 
@@ -108,8 +126,8 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 
 - **JDBC**: JDBC driver on Databricks, network connectivity.
 - **CSV + COPY**: S3 bucket or local storage, Postgres `COPY` support.
-- **Spark Streaming**: Running Spark cluster, JDBC driver (if used), network connectivity.
-- **Kafka**: Kafka cluster, `kafka-python`, Postgres trigger (for Postgres → Databricks), CDF (for Databricks → Postgres).
+- **Spark Streaming**: Running Spark cluster (Databricks cluster OK), JDBC driver (if used), network connectivity.
+- **Kafka**: External Kafka cluster (Databricks cluster can’t host, only produce/consume), `kafka-python`, Postgres trigger (for Postgres → Databricks), CDF (for Databricks → Postgres).
 - **General SCD Sync**: Postgres `on_date`/`off_date`, Databricks Delta (optional).
 
-These options address your 20M record needs and daily ETL requirements efficiently.
+These options address your 20M record needs and daily ETL requirements efficiently, leveraging your Databricks cluster as a Spark compute resource where applicable.
