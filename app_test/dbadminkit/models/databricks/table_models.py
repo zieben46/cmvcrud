@@ -1,4 +1,5 @@
 import pandas as pd
+from pyspark.sql import SparkSession
 
 from sqlalchemy import Table, MetaData
 from sqlalchemy.engine import Engine
@@ -8,28 +9,27 @@ from dbadminkit.models.databricks.scd_types import SCDType1
 from dbadminkit.core.crud_base import CRUDBase
 
 class DBTable(TableInterface):
-    def __init__(self, engine: Engine, table_info: Dict[str, Any]):
-        self.engine = engine
+    def __init__(self, engine: Engine, spark: SparkSession, table_info: Dict[str, Any]):
+        self.engine = engine  # Keep for schema reflection if needed
+        self.spark = spark
         self.table_info = table_info
         self.table_name = table_info["table_name"]
         self.key = table_info.get("key", "id")
         self.scd_type = table_info.get("scd_type", "type1")
-        inspector = inspect(self.engine)
-        self.table = Table(self.table_name, inspector, autoload_with=self.engine)
         self.scd_handler = self._get_scd_handler()
-        self.crud_base = CRUDBase(self.table, self.engine, self.key, self.scd_handler)
+        self.crud_base = CRUDBase(self.table_name, self.engine, self.key, self.scd_handler)
 
     def get_scdtype(self) -> str:
         return self.scd_type
 
     def _get_scd_handler(self):
         if self.scd_type == "type1":  # Only Type 1 for now
-            return SCDType1(self.table, self.key)
+            return SCDType1(self.table_name, self.key, self.spark)
         else:
-            raise NotImplementedError("Only SCD Type 1 implemented for Databricks")
+            raise NotImplementedError("Only SCD Type 1 implemented for Databricks with PySpark")
 
     def perform_crud(self, crud_type: CRUDOperation, data: Dict[str, Any]) -> Any:
-        with self.engine.begin() as session:
+        with self.engine.begin() as session:  # Still using session for compatibility
             if crud_type == CRUDOperation.CREATE:
                 return self.scd_handler.create([data], session)[0]
             elif crud_type == CRUDOperation.READ:

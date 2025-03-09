@@ -2,19 +2,66 @@ from dbadminkit.core.config import DBConfig
 from dbadminkit.core.crud_operations import CRUDOperation
 from dbadminkit.admin_operations import AdminDBOps
 
-# Postgres config from env vars
+# Databricks config for SparkEngine
+db_config = DBConfig.live_databricks(
+    host="adb-1234567890.1.azuredatabricks.net",
+    token="dapi1234567890abcdef1234567890abcdef",
+    http_path="/sql/1.0/endpoints/1234567890abcdef"
+)
+db_ops = AdminDBOps(db_config)
+
+# Postgres config for DBEngine
 pg_config = DBConfig.live_postgres()  # Uses PG_* env vars by default
 pg_ops = AdminDBOps(pg_config)
 
-# Table info
+# Table info (same for both Databricks and Postgres)
 table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
 
-# CRUD operations
-db_ops.perform_crud(table_info, CRUDOperation.CREATE, {"emp_id": 1, "name": "Alice", "salary": 60000})
+# Step 1: Query Databricks using SparkEngine (PySpark)
 result = db_ops.perform_crud(table_info, CRUDOperation.READ, {"emp_id": 1})
 print("Databricks read result:", result)
 
+# Step 2: Save the result to Postgres using DBEngine (SQLAlchemy)
+if result:  # Ensure there's data to save
+    pg_ops.perform_crud(table_info, CRUDOperation.CREATE, result[0])  # Assuming single record for simplicity
+    print("Saved to Postgres:", result[0])
 
+# Optional: Verify the save by reading from Postgres
+pg_result = pg_ops.perform_crud(table_info, CRUDOperation.READ, {"emp_id": 1})
+print("Postgres read result:", pg_result)
+
+
+
+
+
+from dbadminkit.core.config import DBConfig
+from dbadminkit.admin_operations import AdminDBOps
+
+# Databricks config for SparkEngine
+db_config = DBConfig.live_databricks(
+    host="adb-1234567890.1.azuredatabricks.net",
+    token="dapi1234567890abcdef1234567890abcdef",
+    http_path="/sql/1.0/endpoints/1234567890abcdef"
+)
+db_ops = AdminDBOps(db_config)
+
+# Postgres config for DBEngine
+pg_config = DBConfig.live_postgres()  # Uses PG_* env vars by default
+pg_ops = AdminDBOps(pg_config)
+
+# Table info for Postgres
+target_table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
+
+# S3 path to CSV
+s3_path = "s3://my-bucket/path/to/employees.csv"
+
+# Import CSV from S3 to Postgres
+row_count = db_ops.import_s3_csv_to_postgres(s3_path, target_table_info, pg_config)
+print(f"Successfully imported {row_count} records from S3 to Postgres")
+
+# Verify a sample from Postgres
+result = pg_ops.perform_crud(target_table_info, CRUDOperation.READ, {"emp_id": 1})
+print("Postgres read result:", result)
 
 
 

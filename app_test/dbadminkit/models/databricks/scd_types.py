@@ -1,46 +1,65 @@
-# models/databricks/table_models.py
 from typing import Dict, Any, List
 from sqlalchemy import Table, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
-from sqlalchemy.sql import select, insert, update, delete
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import col, lit
 from dbadminkit.core.table_interface import TableInterface
 from dbadminkit.core.crud_operations import CRUDOperation
 from dbadminkit.core.crud_base import CRUDBase
 from dbadminkit.core.scd_base import SCDBase
 
+from pyspark.sql import SparkSession
+
+import pandas as pd
+
+
+
 class SCDType1(SCDBase):
+    def __init__(self, table: str, key: str, spark: SparkSession):
+        self.table = table  # Table name as string for PySpark
+        self.key = key
+        self.spark = spark
+
     def create(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
+        """SCD Type 1: Bulk create with PySpark."""
         if not data:
             return []
-        session.execute(insert(self.table).values(data))
-        session.commit()
+        df = self.spark.createDataFrame(data)
+        df.write.mode("append").saveAsTable(self.table)
         return data
 
     def read(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
-        stmt = select(self.table)
+        """SCD Type 1: Read with PySpark."""
+        df = self.spark.table(self.table)
         if data:
             filters = data[0]
-            stmt = stmt.where(*[getattr(self.table.c, k) == v for k, v in filters.items()])
-        result = session.execute(stmt).fetchall()
-        return [dict(row) for row in result]
+            for k, v in filters.items():
+                df = df.filter(col(k) == v)
+        return [row.asDict() for row in df.collect()]
 
     def update(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
+        """SCD Type 1: Bulk update with PySpark (overwrite)."""
         if not data:
             return []
-        for row in data:
-            filters = row.get("filters", {self.key: self._get_key_value(row)})
-            stmt = update(self.table).where(
-                *[getattr(self.table.c, k) == v for k, v in filters.items()]
-            ).values(**{k: v for k, v in row.items() if k != "filters"})
-            session.execute(stmt)
-        session.commit()
+        update_df = self.spark.createDataFrame(data)
+        existing_df = self.spark.table(self.table)
+        # Merge (upsert) logic
+        merged_df = existing_df.alias("existing").join(
+            update_df.alias("updates"),
+            col("existing." + self.key) == col("updates." + self.key),
+            "left_outer"
+        ).select(
+            *[col("updates." + c).alias(c) if c in update_df.columns else col("existing." + c)
+              for c in existing_df.columns]
+        )
+        merged_df.write.mode("overwrite").saveAsTable(self.table)
         return data
 
     def delete(self, data: List[Dict[str, Any]], session: Session) -> None:
+        """SCD Type 1: Bulk delete with PySpark."""
         if not data:
             return
-        for row in data:
-            stmt = delete(self.table).where(self.table.c[self.key] == self._get_key_value(row))
-            session.execute(stmt)
-        session.commit()
+        delete_keys = [row[self.key] for row in data]
+        df = self.spark.table(self.table).filter(~col(self.key).isin(delete_keys))
+        df.write.mode("overwrite").saveAsTable(self.table)
