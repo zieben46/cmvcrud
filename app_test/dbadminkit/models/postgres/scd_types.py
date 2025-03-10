@@ -1,24 +1,27 @@
+import logging
+
 from typing import Dict, Any, List
 from sqlalchemy import Table
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import select, insert, update, delete
-from dbadminkit.core.scd_base import SCDBase
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.scd_handler import SCDTableHandler
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 
-class SCDType0(SCDBase):
+logger = logging.getLogger(__name__)
+
+class SCDType0Handler(SCDTableHandler):
     def create(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
         """SCD Type 0: Immutable - bulk create."""
         if not data:
             return []
         session.execute(insert(self.table).values(data))
-        session.commit()
+        # Removed session.commit()
         return data
 
     def read(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
         """SCD Type 0: Read records."""
         stmt = select(self.table)
         if data:
-            # Apply filters from the first dict (assuming uniform filters for simplicity)
             filters = data[0]
             stmt = stmt.where(*[getattr(self.table.c, k) == v for k, v in filters.items()])
         result = session.execute(stmt).fetchall()
@@ -32,14 +35,16 @@ class SCDType0(SCDBase):
         """SCD Type 0: No deletes allowed."""
         pass  # Immutable, do nothing
 
-class SCDType1(SCDBase):
+class SCDType1Handler(SCDTableHandler):
     def create(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
-        """SCD Type 1: Bulk create."""
-        if not data:
-            return []
-        session.execute(insert(self.table).values(data))
-        session.commit()
-        return data
+        try:
+            if not data:
+                return []
+            session.execute(insert(self.table).values(data))
+            return data
+        except Exception as e:
+            logger.error(f"Failed to create records in {self.table.name}: {e}")
+            raise
 
     def read(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
         """SCD Type 1: Read records."""
@@ -51,17 +56,19 @@ class SCDType1(SCDBase):
         return [dict(row) for row in result]
 
     def update(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
-        """SCD Type 1: Bulk update by overwriting."""
-        if not data:
-            return []
-        for row in data:
-            filters = row.get("filters", {self.key: self._get_key_value(row)})
-            stmt = update(self.table).where(
-                *[getattr(self.table.c, k) == v for k, v in filters.items()]
-            ).values(**{k: v for k, v in row.items() if k != "filters"})
-            session.execute(stmt)
-        session.commit()
-        return data
+        try:
+            if not data:
+                return []
+            for row in data:
+                filters = row.get("filters", {self.key: self._get_key_value(row)})
+                stmt = update(self.table).where(
+                    *[getattr(self.table.c, k) == v for k, v in filters.items()]
+                ).values(**{k: v for k, v in row.items() if k != "filters"})
+                session.execute(stmt)
+            return data
+        except Exception as e:
+            logger.error(f"Failed to update records in {self.table.name}: {e}")
+            raise
 
     def delete(self, data: List[Dict[str, Any]], session: Session) -> None:
         """SCD Type 1: Bulk delete."""
@@ -70,9 +77,9 @@ class SCDType1(SCDBase):
         for row in data:
             stmt = delete(self.table).where(self.table.c[self.key] == self._get_key_value(row))
             session.execute(stmt)
-        session.commit()
+        # Removed session.commit()
 
-class SCDType2(SCDBase):
+class SCDType2Handler(SCDTableHandler):
     def __init__(self, table: Table, key: str):
         super().__init__(table, key)
         self.active_col = "is_active"
@@ -88,7 +95,7 @@ class SCDType2(SCDBase):
             row[self.on_date_col] = row.get(self.on_date_col, "CURRENT_TIMESTAMP")
             row[self.off_date_col] = None
         session.execute(insert(self.table).values(data))
-        session.commit()
+        # Removed session.commit()
         return data
 
     def read(self, data: List[Dict[str, Any]], session: Session) -> List[Dict[str, Any]]:
@@ -122,7 +129,7 @@ class SCDType2(SCDBase):
             row[self.on_date_col] = row.get(self.on_date_col, "CURRENT_TIMESTAMP")
             row[self.off_date_col] = None
             session.execute(insert(self.table).values(row))
-        session.commit()
+        # Removed session.commit()
         return data
 
     def delete(self, data: List[Dict[str, Any]], session: Session) -> None:
@@ -133,4 +140,4 @@ class SCDType2(SCDBase):
             key_value = self._get_key_value(row)
             stmt = delete(self.table).where(self.table.c[self.key] == key_value)
             session.execute(stmt)
-        session.commit()
+        # Removed session.commit()

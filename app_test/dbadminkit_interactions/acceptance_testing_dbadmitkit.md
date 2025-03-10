@@ -25,7 +25,7 @@ We’ll use Docker to simulate a production-like Postgres environment and levera
 
 ### 4. System Under Test
 - **Purpose**: The actual system being tested in a production-like environment.
-- **In `dbadminkit`**: The `AdminDBOps` class and CLI logic in `dbadminkit.cli.py`, running against a Dockerized Postgres instance and a simulated Databricks environment.
+- **In `dbadminkit`**: The `DBManager` class and CLI logic in `dbadminkit.cli.py`, running against a Dockerized Postgres instance and a simulated Databricks environment.
 
 ---
 
@@ -55,7 +55,7 @@ We’ll use Docker to simulate a production-like Postgres environment and levera
 
 dbadminkit/
 ├── core/
-│   ├── admin_operations.py  # AdminDBOps class
+│   ├── admin_operations.py  # DBManager class
 │   ├── config.py           # DBConfig class
 │   └── init.py
 ├── cli.py                  # CLI entry point
@@ -220,7 +220,7 @@ class DatabricksDriver:
 ### 4. System Under Test
 **File**: `dbadminkit.core.admin_operations.py` (core logic), `dbadminkit.cli.py` (CLI entry point).
 
-  **Description**: The `AdminDBOps` class provides sync methods (`sync_scd2_versions, transfer_with_jdbc`), and `cli.py` exposes them via the `dbadminkit sync` command.
+  **Description**: The `DBManager` class provides sync methods (`sync_scd2_versions, transfer_with_jdbc`), and `cli.py` exposes them via the `dbadminkit sync` command.
 
 **Behavior**: 
     `dbadminkit sync --source postgres:employees --target databricks:employees_target --env test` calls `sync_scd2_versions`.
@@ -236,7 +236,7 @@ CLI Code Example (`dbadminkit.cli.py`)
 
 import argparse
 import os
-from dbadminkit.core.admin_operations import AdminDBOps
+from dbadminkit.core.admin_operations import DBManager
 from dbadminkit.core.config import DBConfig
 
 def get_config(env, db_type):
@@ -272,8 +272,8 @@ def main():
         target_db, target_table = args.target.split(":", 1)
         source_config = get_config(args.env, source_db)
         target_config = get_config(args.env, target_db)
-        source_ops = AdminDBOps(source_config)
-        target_ops = AdminDBOps(target_config)
+        source_ops = DBManager(source_config)
+        target_ops = DBManager(target_config)
         source_info = {"table_name": source_table}
         target_info = {"table_name": target_table}
         if source_db == "postgres" and target_db == "databricks":

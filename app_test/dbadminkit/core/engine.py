@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from .config import DBConfig, DBMode
+from .database_profile import DBConfig, DBMode
 
 class DBEngine:
     def __init__(self, config: DBConfig):
@@ -24,7 +24,7 @@ class DBEngine:
     
     
 from pyspark.sql import SparkSession
-from dbadminkit.core.config import DBConfig
+from app_test.dbadminkit.core.database_profile import DBConfig
 
 class SparkEngine:
     def __init__(self, config: DBConfig):
@@ -59,3 +59,21 @@ class SparkEngine:
 
     def stop(self):
         self.spark.stop()
+
+
+#     from dbadminkit.core.engine import SparkEngine
+# from dbadminkit.core.database_profile import DatabaseProfile
+
+# # Configure with your Databricks token and cluster details
+# config = DatabaseProfile(
+#     mode=DBMode.TEST,
+#     connection_string="databricks://token:<your-token>@<your-databricks-host>?http_path=/sql/protocolv1/o/<org-id>/<cluster-id>"
+# )
+# engine = SparkEngine(config)
+# spark = engine.get_spark()
+
+# # Try a simple select
+# df = spark.table("my_table").select("col1")
+# print(df.collect())
+
+# engine.stop()

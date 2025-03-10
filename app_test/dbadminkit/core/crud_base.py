@@ -3,11 +3,11 @@ from sqlalchemy import Table
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 import pandas as pd
-from dbadminkit.core.crud_operations import CRUDOperation
-from dbadminkit.core.scd_base import SCDBase
+from app_test.dbadminkit.core.crud_types import CRUDOperation
+from app_test.dbadminkit.core.scd_handler import SCDTableHandler
 
 class CRUDBase:
-    def __init__(self, table: Table, engine: Engine, key: str, scd_handler: SCDBase):
+    def __init__(self, table: Table, engine: Engine, key: str, scd_handler: SCDTableHandler):
         self.table = table
         self.engine = engine
         self.key = key

@@ -33,7 +33,7 @@ class SCDStrategy(ABC):
 
 ###################################################################################
 # 🔹 SCD Type 0 (Read-Only)
-class SCDType0Strategy(SCDStrategy):
+class SCDType0HandlerStrategy(SCDStrategy):
     """Handles CRUD operations for SCD Type 0 (Read-Only)."""
 
     def create(self, session: Session, data: List[Dict]):
@@ -52,7 +52,7 @@ class SCDType0Strategy(SCDStrategy):
 
 ###################################################################################
 # 🔹 SCD Type 1 (Full Overwrite)
-class SCDType1Strategy(SCDStrategy):
+class SCDType1HandlerStrategy(SCDStrategy):
     """Handles CRUD operations for SCD Type 1 (Full Overwrite)."""
 
     def create(self, session: Session, data: List[Dict]):
@@ -94,7 +94,7 @@ class SCDType1Strategy(SCDStrategy):
 
 ###################################################################################
 # 🔹 SCD Type 2 (Append-Only with Soft Deletes)
-class SCDType2Strategy(SCDStrategy):
+class SCDType2HandlerStrategy(SCDStrategy):
     """Handles CRUD operations for SCD Type 2 (Append-Only, Historical Tracking)."""
 
     def create(self, session: Session, data: List[Dict]):
@@ -159,9 +159,9 @@ class SCDStrategyFactory:
             raise TypeError("⚠️ Invalid table object. Must be an instance of `sqlalchemy.Table`.")
 
         scdstrategy_map = {
-            SCDType.SCDTYPE0: SCDType0Strategy,
-            SCDType.SCDTYPE1: SCDType1Strategy,
-            SCDType.SCDTYPE2: SCDType2Strategy
+            SCDType.SCDTYPE0: SCDType0HandlerStrategy,
+            SCDType.SCDTYPE1: SCDType1HandlerStrategy,
+            SCDType.SCDTYPE2: SCDType2HandlerStrategy
         }
 
         if scd_type not in scdstrategy_map:

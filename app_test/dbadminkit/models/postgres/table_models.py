@@ -3,9 +3,11 @@ from sqlalchemy import Table, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from dbadminkit.core.table_interface import TableInterface
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 from dbadminkit.core.crud_base import CRUDBase
-from .scd_types import SCDType0, SCDType1, SCDType2
+from .scd_types import SCDType0Handler, SCDType1Handler, SCDType2Handler
+
+from dbadminkit.core.data_validator import DataValidator
 
 class DBTable(TableInterface):
     def __init__(self, engine: Engine, table_info: Dict[str, Any]):
@@ -18,22 +20,24 @@ class DBTable(TableInterface):
         self.table = Table(self.table_name, inspector, autoload_with=self.engine)
         self.scd_handler = self._get_scd_handler()
         self.crud_base = CRUDBase(self.table, self.engine, self.key, self.scd_handler)
+        self.validator = DataValidator(self.get_db_table_schema())  # Add validator
 
     def get_scdtype(self) -> str:
         return self.scd_type
 
     def _get_scd_handler(self):
         if self.scd_type == "type0":
-            return SCDType0(self.table, self.key)
+            return SCDType0Handler(self.table, self.key)
         elif self.scd_type == "type1":
-            return SCDType1(self.table, self.key)
+            return SCDType1Handler(self.table, self.key)
         elif self.scd_type == "type2":
-            return SCDType2(self.table, self.key)
+            return SCDType2Handler(self.table, self.key)
         else:
-            return SCDType1(self.table, self.key)  # Default
+            return SCDType1Handler(self.table, self.key)  # Default
 
     def perform_crud(self, crud_type: CRUDOperation, data: Dict[str, Any]) -> Any:
         with self.engine.begin() as session:
+            validated_data = self.validator.validate([data])[0]  # Validate before CRUD
             if crud_type == CRUDOperation.CREATE:
                 return self.scd_handler.create([data], session)[0]
             elif crud_type == CRUDOperation.READ:

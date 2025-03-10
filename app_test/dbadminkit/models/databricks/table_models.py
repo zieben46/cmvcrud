@@ -4,8 +4,8 @@ from pyspark.sql import SparkSession
 from sqlalchemy import Table, MetaData
 from sqlalchemy.engine import Engine
 from dbadminkit.core.table_interface import TableInterface
-from dbadminkit.core.crud_operations import CRUDOperation
-from dbadminkit.models.databricks.scd_types import SCDType1
+from app_test.dbadminkit.core.crud_types import CRUDOperation
+from app_test.dbadminkit.models.databricks.scd_types import SCDType1Handler
 from dbadminkit.core.crud_base import CRUDBase
 
 class DBTable(TableInterface):
@@ -24,7 +24,7 @@ class DBTable(TableInterface):
 
     def _get_scd_handler(self):
         if self.scd_type == "type1":  # Only Type 1 for now
-            return SCDType1(self.table_name, self.key, self.spark)
+            return SCDType1Handler(self.table_name, self.key, self.spark)
         else:
             raise NotImplementedError("Only SCD Type 1 implemented for Databricks with PySpark")
 

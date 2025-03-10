@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 
 class TableInterface(ABC):
     @abstractmethod

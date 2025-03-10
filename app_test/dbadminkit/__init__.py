@@ -1,4 +1,4 @@
-from .admin_operations import AdminDBOps
+from .database_manager import DBManager
 from .etl_trigger import ETLTrigger
 
-__all__ = ["AdminDBOps", "ETLTrigger"]
+__all__ = ["DBManager", "ETLTrigger"]

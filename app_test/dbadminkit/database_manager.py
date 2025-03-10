@@ -1,11 +1,14 @@
+import logging
+
+
 from typing import List, Dict, Any
 from sqlalchemy.sql import select, text
 from sqlalchemy.orm import Session
 from dbadminkit.core.engine import DBEngine
-from dbadminkit.core.spark_engine import SparkEngine
+from dbadminkit.core.engine import SparkEngine
 from dbadminkit.models.postgres.table_models import DBTable as PostgresDBTable
 from dbadminkit.models.databricks.table_models import DBTable as DatabricksDBTable
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 from pyspark.sql.functions import col
 from delta.tables import DeltaTable
 import datetime
@@ -15,16 +18,21 @@ import pandas as pd
 from kafka import KafkaConsumer  # Requires kafka-python
 from delta_sharing import SharingClient  # Requires delta-sharing library
 
+logger = logging.getLogger(__name__)
 
-
-class AdminDBOps:
-    def __init__(self, config):
-        self.config = config
-        self.engine = DBEngine(config)
-        self.db_type = config.mode
-        self.spark = None
-        if "databricks" in self.db_type.value.lower():
-            self.spark = SparkEngine(config).get_spark()
+class DBManager:
+    def __init__(self, config: DatabaseProfile):
+        try:
+            self.config = config
+            self.engine = DBEngine(config)
+            self.db_type = config.mode
+            self.spark = None
+            if "databricks" in self.db_type.value.lower():
+                from dbadminkit.core.spark_engine import SparkEngine
+                self.spark = SparkEngine(config).get_spark()
+        except Exception as e:
+            logger.error(f"Failed to initialize DBManager: {e}")
+            raise
 
     def get_table(self, table_info: Dict[str, Any]):
         if "databricks" in self.db_type.value.lower():
@@ -149,26 +157,30 @@ class AdminDBOps:
 # xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
     # Bulk Transfer Options (Full Data Movement)
-    def transfer_with_jdbc(self, source_table_info: Dict[str, Any], target_config: DBConfig) -> int:
-        """Bulk transfer using Spark-to-JDBC (Databricks → Postgres)."""
-        if not self.spark:
-            raise ValueError("Spark session required")
-        source_df = self.spark.table(source_table_info["table_name"])
-        row_count = source_df.count()
-        jdbc_url = target_config.connection_string.replace("postgresql://", "jdbc:postgresql://").split("?")[0]
-        user, password = target_config.connection_string.split("://")[1].split("@")[0].split(":")
-        source_df.write \
-            .format("jdbc") \
-            .option("url", jdbc_url) \
-            .option("dbtable", source_table_info["table_name"]) \
-            .option("user", user) \
-            .option("password", password) \
-            .option("driver", "org.postgresql.Driver") \
-            .mode("append") \
-            .save()
-        return row_count
+    def transfer_with_jdbc(self, source_table_info: Dict[str, Any], target_config: DatabaseProfile) -> int:
+        try:
+            if not self.spark:
+                raise ValueError("Spark session required")
+            source_df = self.spark.table(source_table_info["table_name"])
+            row_count = source_df.count()
+            jdbc_url = target_config.connection_string.replace("postgresql://", "jdbc:postgresql://").split("?")[0]
+            user, password = target_config.connection_string.split("://")[1].split("@")[0].split(":")
+            source_df.write \
+                .format("jdbc") \
+                .option("url", jdbc_url) \
+                .option("dbtable", source_table_info["table_name"]) \
+                .option("user", user) \
+                .option("password", password) \
+                .option("driver", "org.postgresql.Driver") \
+                .mode("append") \
+                .save()
+            logger.info(f"Transferred {row_count} rows from {source_table_info['table_name']} to JDBC target")
+            return row_count
+        except Exception as e:
+            logger.error(f"Failed to transfer data with JDBC: {e}")
+            raise
 
-    def transfer_with_csv_copy(self, source_table_info: Dict[str, Any], target_ops: 'AdminDBOps') -> int:
+    def transfer_with_csv_copy(self, source_table_info: Dict[str, Any], target_ops: 'DBManager') -> int:
         """Bulk transfer using CSV export and Postgres COPY (Databricks → Postgres)."""
         if not self.spark:
             raise ValueError("Spark session required")
@@ -207,7 +219,7 @@ class AdminDBOps:
         return source_df.count()  # Approximate
 
     # Incremental Load Options (SCD Type 2 with Change Detection)
-    def sync_databricks_to_postgres_stream(self, target_ops: 'AdminDBOps', source_table_info: Dict[str, Any], 
+    def sync_databricks_to_postgres_stream(self, target_ops: 'DBManager', source_table_info: Dict[str, Any], 
                                            target_table_info: Dict[str, Any], batch_size: int = 10000) -> int:
         """Incremental sync from Databricks to Postgres using Spark Streaming and CDF."""
         if not self.spark:
@@ -243,7 +255,7 @@ class AdminDBOps:
         target_ops.update_last_sync_version(source_table_info["table_name"], current_version)
         return changes_df.count()  # Approximate
 
-    def sync_postgres_to_databricks_csv(self, target_ops: 'AdminDBOps', source_table_info: Dict[str, Any], 
+    def sync_postgres_to_databricks_csv(self, target_ops: 'DBManager', source_table_info: Dict[str, Any], 
                                         target_table_info: Dict[str, Any], batch_size: int = 10000) -> int:
         """Incremental sync from Postgres to Databricks using CSV and MERGE INTO."""
         last_ts = self.get_last_sync_timestamp(source_table_info["table_name"])
@@ -282,7 +294,7 @@ class AdminDBOps:
         self.update_last_sync_timestamp(source_table_info["table_name"], current_ts)
         return total_synced
 
-    def sync_databricks_to_postgres_kafka(self, target_ops: 'AdminDBOps', source_table_info: Dict[str, Any], 
+    def sync_databricks_to_postgres_kafka(self, target_ops: 'DBManager', source_table_info: Dict[str, Any], 
                                           target_table_info: Dict[str, Any]) -> int:
         """Incremental sync from Databricks to Postgres using Kafka and CDF (Conceptual)."""
         if not self.spark:
@@ -316,7 +328,7 @@ class AdminDBOps:
         target_ops.update_last_sync_version(source_table_info["table_name"], current_version)
         return total_applied
 
-    def sync_postgres_to_databricks_kafka(self, target_ops: 'AdminDBOps', source_table_info: Dict[str, Any], 
+    def sync_postgres_to_databricks_kafka(self, target_ops: 'DBManager', source_table_info: Dict[str, Any], 
                                           target_table_info: Dict[str, Any]) -> int:
         """Incremental sync from Postgres to Databricks using Kafka (Conceptual)."""
         # Requires Postgres trigger to log changes to Kafka topic 'employees_changes'
@@ -343,7 +355,7 @@ class AdminDBOps:
         self.update_last_sync_timestamp(source_table_info["table_name"], current_ts)
         return total_applied
 
-    def sync_scd2_versions(self, source_ops: 'AdminDBOps', source_table_info: Dict[str, Any], 
+    def sync_scd2_versions(self, source_ops: 'DBManager', source_table_info: Dict[str, Any], 
                           target_table_info: Dict[str, Any], batch_size: int = 10000) -> int:
         """General SCD Type 2 sync (Postgres → Databricks or vice versa)."""
         source_table = source_ops.get_table(source_table_info)
@@ -433,7 +445,7 @@ class AdminDBOps:
                         total_records += len(batch)
         return total_records
 
-    def import_s3_csv_to_postgres(self, target_ops: 'AdminDBOps', s3_path: str, target_table_info: Dict[str, Any]) -> int:
+    def import_s3_csv_to_postgres(self, target_ops: 'DBManager', s3_path: str, target_table_info: Dict[str, Any]) -> int:
         """Import S3 CSV to Postgres using Spark-to-JDBC (Databricks → Postgres)."""
         if not self.spark:
             raise ValueError("Spark session required")

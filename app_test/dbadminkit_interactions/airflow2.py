@@ -1,10 +1,10 @@
 from datetime import datetime
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from dbadminkit.core.config import DBConfig
-from dbadminkit.admin_operations import AdminDBOps
+from app_test.dbadminkit.core.database_profile import DBConfig
+from app_test.dbadminkit.database_manager import DBManager
 from dbadminkit.etl_trigger import ETLTrigger
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 
 # Configs
 pg_config = DBConfig.live_postgres("postgresql://user:pass@localhost:5432/dbname")
@@ -13,7 +13,7 @@ etl_endpoint = "http://etl-server:8080/jobs"
 
 # Task Functions
 def read_cdc_from_postgres(ti):
-    pg_ops = AdminDBOps(pg_config)
+    pg_ops = DBManager(pg_config)
     cdc_table_info = {"table_name": "cdc_log", "key": "emp_id", "scd_type": "type1"}
     last_ts = ti.xcom_pull(task_ids="sync_scd2_postgres_to_databricks", key="last_processed_ts") or "1970-01-01"
     cdc_records = pg_ops.perform_crud(cdc_table_info, CRUDOperation.READ, {"timestamp__gt": last_ts})
@@ -21,8 +21,8 @@ def read_cdc_from_postgres(ti):
     return cdc_records
 
 def sync_scd2_postgres_to_databricks(ti):
-    pg_ops = AdminDBOps(pg_config)
-    db_ops = AdminDBOps(db_config)
+    pg_ops = DBManager(pg_config)
+    db_ops = DBManager(db_config)
     source_table_info = {"table_name": "employees_source", "key": "emp_id", "scd_type": "type2"}
     target_table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
     applied_count = db_ops.sync_scd2_versions(pg_ops, source_table_info, target_table_info, min_version=1, max_version=3)

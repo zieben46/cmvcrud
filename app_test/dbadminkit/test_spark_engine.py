@@ -1,4 +1,4 @@
-from dbadminkit.core.config import DBConfig
+from app_test.dbadminkit.core.database_profile import DBConfig
 from dbadminkit.core.engine import SparkEngine
 
 # Replace these with your actual Databricks details
@@ -33,7 +33,7 @@ except Exception as e:
 
 # pip install -e .
 
-from dbadminkit.core.config import DBConfig
+from app_test.dbadminkit.core.database_profile import DBConfig
 from dbadminkit.core.spark_engine import SparkEngine
 
 config = DBConfig(

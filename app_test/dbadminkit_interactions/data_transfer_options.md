@@ -1,6 +1,6 @@
 # Data Transfer Options for Databricks and Postgres in `dbadminkit.core.admin_operations.py`
 
-This document summarizes recommended methods for moving data between Databricks and Postgres in the `dbadminkit` setup, specifically within the `AdminDBOps` class located in `dbadminkit.core.admin_operations.py`. It covers both **bulk transfers** (full 20M record loads) and **incremental loads** (SCD Type 2 syncs with daily batches). Each method includes a brief description, estimated speed, use case recommendation, and specific requirements beyond the existing `AdminDBOps`, `SparkEngine`, and `DBEngine` framework. Assumptions: Databricks uses Change Data Feed (CDF), and Postgres maintains an SCD Type 2 table (`emp_id`, `name`, `salary`, `is_active`, `on_date`, `off_date`).
+This document summarizes recommended methods for moving data between Databricks and Postgres in the `dbadminkit` setup, specifically within the `DBManager` class located in `dbadminkit.core.admin_operations.py`. It covers both **bulk transfers** (full 20M record loads) and **incremental loads** (SCD Type 2 syncs with daily batches). Each method includes a brief description, estimated speed, use case recommendation, and specific requirements beyond the existing `DBManager`, `SparkEngine`, and `DBEngine` framework. Assumptions: Databricks uses Change Data Feed (CDF), and Postgres maintains an SCD Type 2 table (`emp_id`, `name`, `salary`, `is_active`, `on_date`, `off_date`).
 
 ---
 
@@ -47,7 +47,7 @@ For daily batch ETL (e.g., 3x daily) syncing changes:
 - **Requirements**:
   - Databricks Delta table with CDF enabled (`ALTER TABLE employees SET TBLPROPERTIES (delta.enableChangeDataFeed = true)`).
   - Running Spark cluster with `SparkEngine` (your Databricks cluster works).
-  - Postgres `SCDType2` handler implemented for `create`/`delete`.
+  - Postgres `SCDType2Handler` handler implemented for `create`/`delete`.
 
 ### 2. CSV Export + MERGE INTO (Postgres → Databricks)
 - **Summary**: Exports Postgres changes (via `last_modified`) to CSV, merges into Databricks Delta table.

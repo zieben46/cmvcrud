@@ -2,9 +2,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List
 from sqlalchemy import Table
 from sqlalchemy.orm import Session
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 
-class SCDBase(ABC):
+class SCDTableHandler(ABC):
     def __init__(self, table: Table, key: str):
         """
         Initialize the SCD handler base class.

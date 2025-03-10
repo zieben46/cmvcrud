@@ -1,6 +1,6 @@
-from dbadminkit.core.config import DBConfig
-from dbadminkit.core.crud_operations import CRUDOperation
-from dbadminkit.admin_operations import AdminDBOps
+from app_test.dbadminkit.core.database_profile import DBConfig
+from app_test.dbadminkit.core.crud_types import CRUDOperation
+from app_test.dbadminkit.database_manager import DBManager
 
 # Databricks config for SparkEngine
 db_config = DBConfig.live_databricks(
@@ -8,11 +8,11 @@ db_config = DBConfig.live_databricks(
     token="dapi1234567890abcdef1234567890abcdef",
     http_path="/sql/1.0/endpoints/1234567890abcdef"
 )
-db_ops = AdminDBOps(db_config)
+db_ops = DBManager(db_config)
 
 # Postgres config for DBEngine
 pg_config = DBConfig.live_postgres()  # Uses PG_* env vars by default
-pg_ops = AdminDBOps(pg_config)
+pg_ops = DBManager(pg_config)
 
 # Table info (same for both Databricks and Postgres)
 table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
@@ -34,8 +34,8 @@ print("Postgres read result:", pg_result)
 
 
 
-from dbadminkit.core.config import DBConfig
-from dbadminkit.admin_operations import AdminDBOps
+from app_test.dbadminkit.core.database_profile import DBConfig
+from app_test.dbadminkit.database_manager import DBManager
 
 # Databricks config for SparkEngine
 db_config = DBConfig.live_databricks(
@@ -43,11 +43,11 @@ db_config = DBConfig.live_databricks(
     token="dapi1234567890abcdef1234567890abcdef",
     http_path="/sql/1.0/endpoints/1234567890abcdef"
 )
-db_ops = AdminDBOps(db_config)
+db_ops = DBManager(db_config)
 
 # Postgres config for DBEngine
 pg_config = DBConfig.live_postgres()  # Uses PG_* env vars by default
-pg_ops = AdminDBOps(pg_config)
+pg_ops = DBManager(pg_config)
 
 # Table info for Postgres
 target_table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
@@ -69,15 +69,15 @@ print("Postgres read result:", result)
 
 
 
-from dbadminkit.core.config import DBConfig
-from dbadminkit.admin_operations import AdminDBOps
+from app_test.dbadminkit.core.database_profile import DBConfig
+from app_test.dbadminkit.database_manager import DBManager
 
 # Configs
 pg_config = DBConfig.live_postgres()
 db_config = DBConfig.live_postgres()  # Hypothetical
 
-pg_ops = AdminDBOps(pg_config)  # Source: Postgres
-db_ops = AdminDBOps(db_config)  # Target: Databricks
+pg_ops = DBManager(pg_config)  # Source: Postgres
+db_ops = DBManager(db_config)  # Target: Databricks
 
 # Table info
 source_table_info = {
@@ -120,13 +120,13 @@ print("ETL job response:", response)
 import streamlit as st
 import pandas as pd
 from passlib.hash import pbkdf2_sha256
-from dbadminkit.core.config import DBConfig
-from dbadminkit.core.crud_operations import CRUDOperation
-from dbadminkit.admin_operations import AdminDBOps
+from app_test.dbadminkit.core.database_profile import DBConfig
+from app_test.dbadminkit.core.crud_types import CRUDOperation
+from app_test.dbadminkit.database_manager import DBManager
 
 # Database config
 pg_config = DBConfig.live_postgres()
-db_ops = AdminDBOps(pg_config)
+db_ops = DBManager(pg_config)
 table_info = {"table_name": "employees", "key": "emp_id", "scd_type": "type2"}
 users_table_info = {"table_name": "users", "key": "username", "scd_type": "type1"}
 locks_table_info = {"table_name": "table_locks", "key": "table_name", "scd_type": "type1"}
@@ -236,7 +236,7 @@ else:
             token="dapi1234567890abcdef1234567890abcdef",
             http_path="/sql/1.0/endpoints/1234567890abcdef"
         )
-        db_target = AdminDBOps(db_config)
+        db_target = DBManager(db_config)
         target_table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
         applied_count = db_target.sync_scd2_versions(db_ops, table_info, target_table_info, min_version=1, max_version=3)
         st.success(f"Synced {applied_count} changes to Databricks")

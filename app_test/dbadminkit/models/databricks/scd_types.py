@@ -5,17 +5,12 @@ from sqlalchemy.orm import Session
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, lit
 from dbadminkit.core.table_interface import TableInterface
-from dbadminkit.core.crud_operations import CRUDOperation
+from app_test.dbadminkit.core.crud_types import CRUDOperation
 from dbadminkit.core.crud_base import CRUDBase
-from dbadminkit.core.scd_base import SCDBase
-
-from pyspark.sql import SparkSession
-
+from app_test.dbadminkit.core.scd_handler import SCDTableHandler
 import pandas as pd
 
-
-
-class SCDType1(SCDBase):
+class SCDType1Handler(SCDTableHandler):
     def __init__(self, table: str, key: str, spark: SparkSession):
         self.table = table  # Table name as string for PySpark
         self.key = key

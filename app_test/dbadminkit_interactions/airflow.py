@@ -1,8 +1,8 @@
 from datetime import datetime
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from dbadminkit.core.config import DBConfig
-from dbadminkit.admin_operations import AdminDBOps
+from app_test.dbadminkit.core.database_profile import DBConfig
+from app_test.dbadminkit.database_manager import DBManager
 from dbadminkit.etl_trigger import ETLTrigger
 
 # Configs
@@ -12,8 +12,8 @@ etl_endpoint = "http://etl-server:8080/jobs"
 
 # Task Functions
 def sync_scd2_postgres_to_databricks():
-    pg_ops = AdminDBOps(pg_config)
-    db_ops = AdminDBOps(db_config)
+    pg_ops = DBManager(pg_config)
+    db_ops = DBManager(db_config)
     source_table_info = {"table_name": "employees_source", "key": "emp_id", "scd_type": "type2"}
     target_table_info = {"table_name": "employees_target", "key": "emp_id", "scd_type": "type1"}
     applied_count = db_ops.sync_scd2_versions(pg_ops, source_table_info, target_table_info, min_version=1, max_version=3)

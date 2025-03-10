@@ -5,7 +5,7 @@ import pandas as pd
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Table, MetaData
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
-from app.database.scd.db_scd_strategies import SCDType2Strategy  # Adjust import path
+from app.database.scd.db_scd_strategies import SCDType2HandlerStrategy  # Adjust import path
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def db_session():
 
 def test_create_adds_on_time(db_session):
     session, employees = db_session
-    strategy = SCDType2Strategy(employees)
+    strategy = SCDType2HandlerStrategy(employees)
     strategy.table = employees  # Assign the test table
 
     # Input test data
@@ -66,7 +66,7 @@ def test_create_adds_on_time(db_session):
 
 def test_read_filters_off_time(db_session):
     session, employees = db_session
-    strategy = SCDType2Strategy()
+    strategy = SCDType2HandlerStrategy()
     strategy.table = employees
 
     # Insert test data (some with `off_time`)

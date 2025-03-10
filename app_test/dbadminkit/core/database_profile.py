@@ -1,10 +1,14 @@
+import logging
 from enum import Enum
 from dataclasses import dataclass
 import os
 from typing import Optional, Callable
 from dotenv import load_dotenv
 
-# Load environment variables from .env file (optional)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 class DBMode(Enum):
@@ -13,7 +17,7 @@ class DBMode(Enum):
     IN_MEMORY = "in_memory"
 
 @dataclass
-class DBConfig:
+class DatabaseProfile:
     mode: DBMode
     connection_string: Optional[str] = None
     host: Optional[str] = None
@@ -27,17 +31,10 @@ class DBConfig:
     schema: Optional[str] = None
     db_type: Optional[str] = None
 
-    # Class-level default function for getting environment variables
     _getenv: Callable[[str, Optional[str]], str] = staticmethod(os.getenv)
 
     @classmethod
     def set_getenv(cls, custom_getenv: Callable[[str, Optional[str]], str]) -> None:
-        """
-        Set a custom function to retrieve environment variables, replacing os.getenv.
-        
-        Args:
-            custom_getenv: A function that takes a key and optional default, returning a value.
-        """
         cls._getenv = staticmethod(custom_getenv)
 
     @staticmethod
@@ -47,40 +44,38 @@ class DBConfig:
         host: str = None,
         port: str = None,
         dbname: str = None
-    ) -> 'DBConfig':
-        """
-        Create a live PostgreSQL configuration with credentials from environment variables.
-        
-        Args:
-            username: Postgres username (default from PG_USERNAME via _getenv).
-            password: Postgres password (default from PG_PASSWORD via _getenv).
-            host: Postgres host (default from PG_HOST via _getenv, fallback to "localhost").
-            port: Postgres port (default from PG_PORT via _getenv, fallback to "5432").
-            dbname: Postgres database name (default from PG_DBNAME via _getenv).
-        
-        Returns:
-            DBConfig instance for live PostgreSQL.
-        """
-        # Use the class-level _getenv function
-        username = username or DBConfig._getenv("PG_USERNAME")
-        password = password or DBConfig._getenv("PG_PASSWORD")
-        host = host or DBConfig._getenv("PG_HOST", "localhost")
-        port = port or DBConfig._getenv("PG_PORT", "5432")
-        dbname = dbname or DBConfig._getenv("PG_DBNAME")
+    ) -> 'DatabaseProfile':
+        try:
+            username = username or DatabaseProfile._getenv("PG_USERNAME")
+            password = password or DatabaseProfile._getenv("PG_PASSWORD")
+            host = host or DatabaseProfile._getenv("PG_HOST", "localhost")
+            port = port or DatabaseProfile._getenv("PG_PORT", "5432")
+            dbname = dbname or DatabaseProfile._getenv("PG_DBNAME")
 
-        if not all([username, password, dbname]):
-            raise ValueError("Username, password, and dbname must be provided via arguments or environment variables")
-        conn_str = f"postgresql://{username}:{password}@{host}:{port}/{dbname}"
-        return DBConfig(
-            mode=DBMode.LIVE,
-            connection_string=conn_str,
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            dbname=dbname
-            db_type="postgres"
-        )
+            if not all([username, password, dbname]):
+                raise ValueError("Username, password, and dbname must be provided via arguments or environment variables")
+            conn_str = f"postgresql://{username}:{password}@{host}:{port}/{dbname}"
+            return DatabaseProfile(
+                mode=DBMode.LIVE,
+                connection_string=conn_str,
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                dbname=dbname,
+                db_type="postgres"
+            )
+        except Exception as e:
+            logger.error(f"Failed to create live_postgres profile: {e}")
+            raise
+
+
+
+
+
+
+
+        
 
     @staticmethod
     def test_postgres(
@@ -215,7 +210,7 @@ class DBConfig:
 
 
 
-from dbadminkit.core.config import DBConfig
+from app_test.dbadminkit.core.database_profile import DBConfig
 
 # Uses os.getenv by default
 config = DBConfig.live_databricks()
