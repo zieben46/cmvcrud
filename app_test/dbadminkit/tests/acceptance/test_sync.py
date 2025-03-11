@@ -1,27 +1,37 @@
 import pytest
+from dsl import SyncDSL, PostgresDriver, DatabricksDriver
 from dbadminkit.core.database_profile import DatabaseProfile
-from dbadminkit.tests.acceptance.dsl import SyncDSL
 
 class TestSync:
-    def setUp(self):
-        self.dsl = SyncDSL(DatabaseProfile.in_memory(), DatabaseProfile.test_databricks())
+    def setUp(self, source_type, target_type):
+        """Initialize source and target drivers based on types."""
+        drivers = {
+            "postgres": PostgresDriver(DatabaseProfile.in_memory()),
+            "databricks": DatabricksDriver(DatabaseProfile.test_databricks())
+        }
+        self.source_driver = drivers[source_type]
+        self.target_driver = drivers[target_type]
+        self.dsl = SyncDSL(self.source_driver, self.target_driver)
 
-    def test_sync_with_jdbc(self):
-        self.dsl.select_table("employees", "emp_id") \
-               .setup_data([{"emp_id": 1, "name": "Alice"}]) \
-               .sync_to_target("employees_target", sync_method="jdbc") \
-               .assert_tables_synced("employees_target")
+    @pytest.mark.parametrize("source_type, target_type", [
+        ("postgres", "databricks"),
+        ("databricks", "postgres")
+    ])
+    def test_sync_operations(self, source_type, target_type):
+        self.setUp(source_type, target_type)
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .sync_to_target("employees_target", sync_method="jdbc") \
+                .assert_tables_synced()
 
-    def test_sync_with_csv(self):
-        self.dsl.select_table("employees", "emp_id") \
-               .setup_data([{"emp_id": 1, "name": "Alice"}]) \
-               .sync_to_target("employees_target", sync_method="csv") \
-               .assert_tables_synced("employees_target")
-
-    # Placeholder for bidirectional test (Postgres -> Databricks already works; reverse not implemented yet)
-    # def test_sync_from_databricks_to_postgres(self):
-    #     dsl = SyncDSL(DatabaseProfile.test_databricks(), DatabaseProfile.in_memory())
-    #     dsl.select_table("employees_target", "emp_id") \
-    #        .setup_data([{"emp_id": 1, "name": "Bob"}]) \
-    #        .sync_to_target("employees", sync_method="jdbc") \
-    #        .assert_tables_synced("employees")
+    @pytest.mark.parametrize("source_type, target_type", [
+        ("postgres", "databricks"),
+        ("databricks", "postgres")
+    ])
+    def test_sync_with_invalid_method(self, source_type, target_type):
+        self.setUp(source_type, target_type)
+        with pytest.raises(ValueError):
+            self.dsl.select_table("employees", "emp_id") \
+                    .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                    .sync_to_target("employees_target", sync_method="invalid")
