@@ -2,9 +2,6 @@
 
 This document outlines how to implement acceptance testing for the `dbadminkit` project, following Dave Farley’s best practices from Test-Driven Development (TDD). Farley’s approach tests **what** the system does (its behavior) rather than **how** it does it (its implementation), evaluating the system in life-like scenarios from an external user’s perspective in production-like environments. His four-layer acceptance testing model—**Test Case**, **Domain-Specific Language (DSL)**, **Protocol Driver**, and **System Under Test**—is adapted here for `dbadminkit`, which manages data transfers between Databricks and Postgres (e.g., bulk 20M record loads, incremental SCD Type 2 syncs).
 
-We’ll use Docker to simulate a production-like Postgres environment and leverage Python’s `pytest` framework to execute these tests, integrating with the CLI entry point in `dbadminkit.cli.py`.
-
-
 ## Farley’s Four-Layer Acceptance Testing Model
 
 ### 1. Test Case (Executable Specification)
@@ -12,6 +9,8 @@ This layer contains the actual test cases written using the DSL, executed by the
 
 ### 2. Domain-Specific Language (DSL) Layer
 The Domain Specific Language (DSL) layer involves creating a high-level language for writing acceptance tests. This language is designed to be close to the problem domain, making tests readable and understandable by business stakeholders. It helps in specifying test cases in a way that aligns with user requirements, enhancing communication between technical and non-technical teams.
+
+***for high reusability***
 
 ### 3. Protocol Driver
 The drivers layer consists of components or libraries that handle low-level interactions with the system under test (SUT). These drivers, such as Selenium for web UI or HTTP clients for APIs, abstract away the complexities of direct system interaction, ensuring the test implementation remains clean and resilient to changes in the SUT's interface.
@@ -23,7 +22,7 @@ The system under test (SUT) is the software application or system being tested. 
 
 ## Acceptance Testing Goals for `dbadminkit`
 - **Life-Like Scenarios**: Test table syncing (e.g., Postgres to Databricks).
-- **External User Perspective**: Simulate a data engineer running CLI commands.
+- **External User Perspective**: Simulate a data engineer running dbadminkit commands.
 - **Production-Like Environment**: Use Docker for Postgres and a mock Databricks setup.
 - **Test WHAT, Not HOW**: Verify outcomes (e.g., “data is synced”) without checking internals (e.g., Spark execution details).
 
@@ -33,38 +32,15 @@ The system under test (SUT) is the software application or system being tested. 
 
 ### Scenario 1: Sync `employees` Table from Postgres to Databricks
 - **Description**: A data engineer syncs the `employees` table from Postgres to Databricks in a test environment and verifies the data matches.
-- **Test Case**: "Should sync the `employees` table from Postgres to Databricks with the CLI."
+- **Test Case**: "Should sync the `employees` table from Postgres to Databricks with dbadminkit commands."
 
 ### Scenario 2: Bulk Transfer from Databricks to Postgres
 - **Description**: A data engineer performs a bulk transfer of the `customers` table from Databricks to Postgres and verifies the row count.
-- **Test Case**: "Should bulk transfer the `customers` table from Databricks to Postgres with the CLI."
-
----
-
-## Implementation in `dbadminkit`
-
-### Directory Structure
-
-dbadminkit/
-├── core/
-│   ├── admin_operations.py  # DBManager class
-│   ├── config.py           # DBConfig class
-│   └── init.py
-├── cli.py                  # CLI entry point
-├── main.py             # Makes package executable
-├── tests/
-│   ├── acceptance/
-│   │   ├── dsl.py         # DSL layer (DataOpsDSL)
-│   │   ├── drivers.py     # Protocol driver implementations
-│   │   └── test_cases.py  # Test cases (executable specs)
-│   └── conftest.py        # Pytest fixtures (Docker setup)
-├── Dockerfile             # Postgres container setup
-├── setup.py               # Package definition
-└── requirements.txt       # Dependencies
+- **Test Case**: "Should bulk transfer the `customers` table from Databricks to Postgres with dbadminkit commands."
 
 
 
-### 1. Test Case Layer
+### 1. Test Case Layer (1/2)
 **File**: `tests/acceptance/test_crud.py`  
 High-level executable specifications.
 
@@ -116,8 +92,57 @@ class TestCrud:
                 .setup_data([{"emp_id": 1, "name": "Alice"}]) \
                 .execute_crud(CRUDOperation.UPDATE, {"name": "Updated"}, {"emp_id": 1}) \
                 .assert_table_has([{"emp_id": 1, "name": "Updated"}])
+
 ```
 
+### 1. Test Case Layer (2/2)
+**File**: `tests/acceptance/test_crud.py`  
+High-level executable specifications.
+
+```python
+
+class TestSync:
+    def setUp(self, source_type, target_type):
+        """Initialize source and target drivers based on types."""
+        drivers = {
+            "postgres": PostgresDriver(DatabaseProfile.in_memory()),
+            "databricks": DatabricksDriver(DatabaseProfile.test_databricks())
+        }
+        self.source_driver = drivers[source_type]
+        self.target_driver = drivers[target_type]
+        self.dsl = SyncDSL(self.source_driver, self.target_driver)
+
+    def test_sync_operations_postgres_to_databricks(self):
+        self.setUp("postgres", "databricks")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .sync_to_target("employees_target", sync_method="jdbc") \
+                .assert_tables_synced()
+
+    def test_sync_operations_databricks_to_postgres(self):
+        self.setUp("databricks", "postgres")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .sync_to_target("employees_target", sync_method="jdbc") \
+                .assert_tables_synced()
+
+    def test_sync_with_invalid_method_postgres_to_databricks(self):
+        self.setUp("postgres", "databricks")
+        with pytest.raises(ValueError):
+            self.dsl.select_table("employees", "emp_id") \
+                    .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                    .sync_to_target("employees_target", sync_method="invalid")
+
+    def test_sync_with_invalid_method_databricks_to_postgres(self):
+        self.setUp("databricks", "postgres")
+        with pytest.raises(ValueError):
+            self.dsl.select_table("employees", "emp_id") \
+                    .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                    .sync_to_target("employees_target", sync_method="invalid")
+
+```
 
 ### 2. Domain-Specific Language (DSL) Layer
 **File**: ` tests/acceptance/dsl.py`  
@@ -286,7 +311,7 @@ class PostgresDriver:
 ```
 
 ### 4. System Under Test
-Tested from the perspective of a python developer.
+dbadminkit.  Specifically, the production code in dbadminkit.core
 ```
 
 Running the Tests
