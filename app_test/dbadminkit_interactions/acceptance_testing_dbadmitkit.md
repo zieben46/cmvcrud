@@ -30,18 +30,16 @@ The system under test (SUT) is the software application or system being tested. 
 - **Test WHAT, Not HOW**: Verify outcomes (e.g., “data is synced”) without checking internals (e.g., Spark execution details).
 
 ---
-
 ## Example Acceptance Test Scenarios
 
-### Scenario 1: Sync `employees` Table from Postgres to Databricks
+### Scenario 1: Create records in `employees` Table on Postgres
+- **Description**: A data engineer creates records in the `employees` table in a Postgres test environment and verifies the data exists.
+- **Test Case**: "Should create a record in a Postgres `employees` table with dbadminkit script."
+
+### Scenario 2: Sync `employees` Table from Postgres to Databricks
 - **Description**: A data engineer syncs the `employees` table from Postgres to Databricks in a test environment and verifies the data matches.
 - **Test Case**: "Should sync the `employees` table from Postgres to Databricks with dbadminkit script."
-
-### Scenario 2: Bulk Transfer from Databricks to Postgres
-- **Description**: A data engineer performs a bulk transfer of the `customers` table from Databricks to Postgres and verifies the row count.
-- **Test Case**: "Should bulk transfer the `customers` table from Databricks to Postgres with dbadminkit script."
-
-
+---
 
 ### 1. Test Case Layer (1/2)
 **File**: `tests/acceptance/test_crud.py`  
@@ -244,8 +242,6 @@ class SyncDSL(DatabaseDSL):
         pd.testing.assert_frame_equal(source_df, target_df, check_like=True)
         return self
 ```
-
-
 
 ### 3. Protocol Driver Layer
 **File**: `tests/acceptance/drivers.py`  
