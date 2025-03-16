@@ -2,17 +2,20 @@
 
 This document outlines how to implement acceptance testing for the `dbadminkit` project, following Dave Farley’s best practices from Test-Driven Development (TDD). Farley’s approach tests **what** the system does (its behavior) rather than **how** it does it (its implementation), evaluating the system in life-like scenarios from an external user’s perspective in production-like environments. His four-layer acceptance testing model—**Test Case**, **Domain-Specific Language (DSL)**, **Protocol Driver**, and **System Under Test**—is adapted here for `dbadminkit`, which manages data transfers between Databricks and Postgres (e.g., bulk 20M record loads, incremental SCD Type 2 syncs).
 
+
+
 ## Farley’s Four-Layer Acceptance Testing Model
 
+<div style="text-align: center;">
 ![alt text](image.png)
+***source:  https://www.youtube.com/watch?v=JDD5EEJgpHU&ab_channel=ModernSoftwareEngineering***
+</div>
 
 ### 1. Test Case (Executable Specification)
 This layer contains the actual test cases written using the DSL, executed by the testing framework using the drivers. It defines the scenarios to be tested and verifies results against expected outcomes, ensuring the tests are both reliable and repeatable. This layer bridges the gap between the high-level specifications and the practical execution against the SUT.
 
 ### 2. Domain-Specific Language (DSL) Layer
 The Domain Specific Language (DSL) layer involves creating a high-level language for writing acceptance tests. This language is designed to be close to the problem domain, making tests readable and understandable by business stakeholders. It helps in specifying test cases in a way that aligns with user requirements, enhancing communication between technical and non-technical teams.
-
-***for high reusability***
 
 ### 3. Protocol Driver
 The drivers layer consists of components or libraries that handle low-level interactions with the system under test (SUT). These drivers, such as Selenium for web UI or HTTP clients for APIs, abstract away the complexities of direct system interaction, ensuring the test implementation remains clean and resilient to changes in the SUT's interface.
@@ -24,7 +27,7 @@ The system under test (SUT) is the software application or system being tested. 
 
 ## Acceptance Testing Goals for `dbadminkit`
 - **Life-Like Scenarios**: Test table syncing (e.g., Postgres to Databricks).
-- **External User Perspective**: Simulate a data engineer running dbadminkit commands.
+- **External User Perspective**: Simulate a data engineer running dbadminkit script.
 - **Production-Like Environment**: Use Docker for Postgres and a mock Databricks setup.
 - **Test WHAT, Not HOW**: Verify outcomes (e.g., “data is synced”) without checking internals (e.g., Spark execution details).
 
@@ -34,11 +37,11 @@ The system under test (SUT) is the software application or system being tested. 
 
 ### Scenario 1: Sync `employees` Table from Postgres to Databricks
 - **Description**: A data engineer syncs the `employees` table from Postgres to Databricks in a test environment and verifies the data matches.
-- **Test Case**: "Should sync the `employees` table from Postgres to Databricks with dbadminkit commands."
+- **Test Case**: "Should sync the `employees` table from Postgres to Databricks with dbadminkit script."
 
 ### Scenario 2: Bulk Transfer from Databricks to Postgres
 - **Description**: A data engineer performs a bulk transfer of the `customers` table from Databricks to Postgres and verifies the row count.
-- **Test Case**: "Should bulk transfer the `customers` table from Databricks to Postgres with dbadminkit commands."
+- **Test Case**: "Should bulk transfer the `customers` table from Databricks to Postgres with dbadminkit script."
 
 
 
