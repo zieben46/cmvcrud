@@ -4,28 +4,20 @@ This document outlines how to implement acceptance testing for the `dbadminkit` 
 
 We’ll use Docker to simulate a production-like Postgres environment and leverage Python’s `pytest` framework to execute these tests, integrating with the CLI entry point in `dbadminkit.cli.py`.
 
----
 
 ## Farley’s Four-Layer Acceptance Testing Model
 
 ### 1. Test Case (Executable Specification)
-- **Purpose**: Defines the high-level behavior to test as an executable specification, readable by stakeholders.
-- **In `dbadminkit`**: Written as `pytest` tests, specifying what the system should do from a data engineer’s perspective (e.g., syncing tables).
-- **Example**: "A data engineer can sync the `employees` table from Postgres to Databricks and verify the data matches."
+This layer contains the actual test cases written using the DSL, executed by the testing framework using the drivers. It defines the scenarios to be tested and verifies results against expected outcomes, ensuring the tests are both reliable and repeatable. This layer bridges the gap between the high-level specifications and the practical execution against the SUT.
 
 ### 2. Domain-Specific Language (DSL) Layer
-- **Purpose**: Provides a readable, abstract interface for test cases using domain-specific terms, hiding technical details.
-- **In `dbadminkit`**: A Python class (`DataOpsDSL`) abstracts CLI commands and verification steps (e.g., `sync_table`, `assert_table_synced`).
-- **Example**: `data_ops.sync_table()` triggers a sync via the CLI.
+The Domain Specific Language (DSL) layer involves creating a high-level language for writing acceptance tests. This language is designed to be close to the problem domain, making tests readable and understandable by business stakeholders. It helps in specifying test cases in a way that aligns with user requirements, enhancing communication between technical and non-technical teams.
 
 ### 3. Protocol Driver
-- **Purpose**: Implements the DSL by interacting with the system through real interfaces (e.g., CLI commands, API calls).
-- **In `dbadminkit`**: Uses `subprocess` to run `dbadminkit sync` commands and SQL queries to verify results, mimicking how a user would execute ETL jobs.
-- **Example**: Executes `dbadminkit sync --source postgres:employees --target databricks:employees_target --env test`.
+The drivers layer consists of components or libraries that handle low-level interactions with the system under test (SUT). These drivers, such as Selenium for web UI or HTTP clients for APIs, abstract away the complexities of direct system interaction, ensuring the test implementation remains clean and resilient to changes in the SUT's interface.
 
 ### 4. System Under Test
-- **Purpose**: The actual system being tested in a production-like environment.
-- **In `dbadminkit`**: The `DBManager` class and CLI logic in `dbadminkit.cli.py`, running against a Dockerized Postgres instance and a simulated Databricks environment.
+The system under test (SUT) is the software application or system being tested. It is the target of all acceptance tests, and the other layers work together to interact with and verify its behavior, ensuring it meets user expectations in a production-like environment.
 
 ---
 
@@ -73,38 +65,57 @@ dbadminkit/
 
 
 ### 1. Test Case Layer
-**File**: `tests/acceptance/test_cases.py`  
+**File**: `tests/acceptance/test_crud.py`  
 High-level executable specifications.
 
 ```python
 import pytest
-from dsl import DataOpsDSL
+from dbadminkit.core.database_profile import DatabaseProfile
+from dbadminkit.core.crud_types import CRUDOperation
+from dsl import CrudDSL, PostgresDriver, DatabricksDriver
 
-@pytest.fixture
-def data_ops(docker_postgres):
-    return DataOpsDSL(postgres_config=docker_postgres, databricks_config=None)  # Mock Databricks for test
+class TestCrud:
+    def setUp(self, database_type):
+        """Initialize the DSL and driver based on database type."""
+        if database_type == "postgres":
+            self.driver = PostgresDriver(DatabaseProfile.in_memory())
+        elif database_type == "databricks":
+            self.driver = DatabricksDriver(DatabaseProfile.test_databricks())
+        else:
+            raise ValueError(f"Unsupported database type: {database_type}")
+        self.dsl = CrudDSL(self.driver)
 
-@pytest.mark.acceptance
-def test_should_sync_employees_table(data_ops):
-    # Arrange: Setup test data in Postgres
-    data_ops.setup_postgres_data(table_name="employees", record_count=100)
-    
-    # Act: Sync table from Postgres to Databricks
-    data_ops.sync_table(source_table="employees", target_table="employees_target")
-    
-    # Assert: Verify data matches
-    data_ops.assert_table_synced(source_table="employees", target_table="employees_target")
+    def test_crud_operations_postgres(self):
+        self.setUp("postgres")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .execute_crud(CRUDOperation.CREATE, {"emp_id": 2, "name": "Bob"}) \
+                .assert_table_has([{"emp_id": 1, "name": "Alice"}, {"emp_id": 2, "name": "Bob"}])
 
-@pytest.mark.acceptance
-def test_should_bulk_transfer_customers_table(data_ops):
-    # Arrange: Setup test data in Databricks (mocked)
-    data_ops.setup_databricks_data(table_name="customers", record_count=50)
-    
-    # Act: Bulk transfer from Databricks to Postgres
-    data_ops.bulk_transfer(source_table="customers", target_table="customers_target")
-    
-    # Assert: Verify data matches
-    data_ops.assert_table_synced(source_table="customers", target_table="customers_target")
+    def test_crud_operations_databricks(self):
+        self.setUp("databricks")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .execute_crud(CRUDOperation.CREATE, {"emp_id": 2, "name": "Bob"}) \
+                .assert_table_has([{"emp_id": 1, "name": "Alice"}, {"emp_id": 2, "name": "Bob"}])
+
+    def test_update_postgres(self):
+        self.setUp("postgres")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .execute_crud(CRUDOperation.UPDATE, {"name": "Updated"}, {"emp_id": 1}) \
+                .assert_table_has([{"emp_id": 1, "name": "Updated"}])
+
+    def test_update_databricks(self):
+        self.setUp("databricks")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .execute_crud(CRUDOperation.UPDATE, {"name": "Updated"}, {"emp_id": 1}) \
+                .assert_table_has([{"emp_id": 1, "name": "Updated"}])
 ```
 
 
@@ -113,44 +124,97 @@ def test_should_bulk_transfer_customers_table(data_ops):
 Readable abstraction for test steps.
 
 ```python
-from drivers import PostgresDriver, DatabricksDriver
-import subprocess
+from typing import Dict, Any, List
+import pandas as pd
 
-class DataOpsDSL:
-    def __init__(self, postgres_config, databricks_config):
-        self.pg_driver = PostgresDriver(postgres_config)
-        self.db_driver = DatabricksDriver(databricks_config) if databricks_config else DatabricksDriver(None)
-        self.env = "test"  # Fixed for test environment
+import logging
+from typing import Dict, Any, List
+import pandas as pd
 
-    def setup_postgres_data(self, table_name, record_count):
-        self.pg_driver.setup_test_data(table_name, record_count, is_scd2=True)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-    def setup_databricks_data(self, table_name, record_count):
-        self.db_driver.setup_test_data(table_name, record_count)
+class DatabaseDSL:
+    def __init__(self, driver):
+        self.driver = driver
+        self.selected_table = None
 
-    def sync_table(self, source_table, target_table):
-        # Use CLI command for incremental sync (Postgres -> Databricks)
-        subprocess.run([
-            "dbadminkit", "sync",
-            "--source", f"postgres:{source_table}",
-            "--target", f"databricks:{target_table}",
-            "--env", self.env
-        ], check=True)
+    def create_table(self, table_name: str, schema: Dict[str, str], key: str = "id"):
+        """Create a table with the given schema."""
+        if not schema:
+            raise ValueError("Schema must be provided")
+        self.selected_table = {"table_name": table_name, "key": key}
+        self.driver.create_table(table_name, schema)
+        logger.info(f"Created table {table_name} with schema {schema}")
+        return self
 
-    def bulk_transfer(self, source_table, target_table):
-        # Use CLI command for bulk transfer (Databricks -> Postgres)
-        subprocess.run([
-            "dbadminkit", "sync",
-            "--source", f"databricks:{source_table}",
-            "--target", f"postgres:{target_table}",
-            "--env", self.env
-        ], check=True)
+    def select_table(self, table_name: str, key: str = "id"):
+        self.selected_table = {"table_name": table_name, "key": key}
+        return self
 
-    def assert_table_synced(self, source_table, target_table):
-        source_count = self.pg_driver.get_row_count(source_table) if "postgres" in source_table else self.db_driver.get_row_count(source_table)
-        target_count = self.db_driver.get_row_count(target_table) if "databricks" in target_table else self.pg_driver.get_row_count(target_table)
-        assert source_count == target_count, f"Expected {source_count} rows, got {target_count}"
+    def setup_data(self, records: List[Dict[str, Any]]):
+        if not self.selected_table:
+            raise ValueError("No table selected")
+        self.driver.create(self.selected_table, records)
+        logger.info(f"Inserted {len(records)} records into {self.selected_table['table_name']}")
+        return self
 
+    def assert_table_has(self, expected_records: List[Dict[str, Any]]):
+        if not self.selected_table:
+            raise ValueError("No table selected")
+        actual_data = self.driver.read(self.selected_table, {})
+        actual_df = pd.DataFrame(actual_data)
+        expected_df = pd.DataFrame(expected_records)
+        pd.testing.assert_frame_equal(actual_df, expected_df, check_like=True)
+        logger.info(f"Assertion passed for table {self.selected_table['table_name']}")
+        return self
+
+    def assert_record_exists(self, filters: Dict[str, Any], expected_data: Dict[str, Any]):
+        if not self.selected_table:
+            raise ValueError("No table selected")
+        data = self.driver.read(self.selected_table, filters)
+        assert len(data) == 1, "Record not found"
+        for key, value in expected_data.items():
+            assert data[0][key] == value, f"Mismatch in {key}"
+        return self
+
+class CrudDSL(DatabaseDSL):
+    def execute_crud(self, operation: CRUDOperation, data: Dict[str, Any], filters: Dict[str, Any] = None):
+        if not self.selected_table:
+            raise ValueError("No table selected")
+        if operation == CRUDOperation.CREATE:
+            self.driver.create(self.selected_table, [data])
+        elif operation == CRUDOperation.READ:
+            return self.driver.read(self.selected_table, data or {})
+        elif operation == CRUDOperation.UPDATE:
+            self.driver.update(self.selected_table, data, filters or data)
+        elif operation == CRUDOperation.DELETE:
+            self.driver.delete(self.selected_table, filters or data)
+        return self
+
+class SyncDSL(DatabaseDSL):
+    def __init__(self, source_driver: DatabaseDriver, target_driver: DatabaseDriver):
+        super().__init__(source_driver)
+        self.target_driver = target_driver
+        self.target_table = None
+
+    def sync_to_target(self, target_table: str, sync_method: str = "jdbc"):
+        if not self.selected_table:
+            raise ValueError("No source table selected")
+        self.target_table = {"table_name": target_table, "key": self.selected_table["key"]}
+        self.driver.sync_to(self.selected_table, self.target_driver.manager, target_table, sync_method)
+        return self
+
+    def assert_tables_synced(self):
+        if not self.selected_table or not self.target_table:
+            raise ValueError("Tables not selected")
+        source_data = self.driver.read(self.selected_table, {})
+        target_data = self.target_driver.read(self.target_table, {})
+        source_df = pd.DataFrame(source_data)
+        target_df = pd.DataFrame(target_data)
+        pd.testing.assert_frame_equal(source_df, target_df, check_like=True)
+        return self
 ```
 
 
@@ -161,198 +225,68 @@ Implements DSL actions with real system interactions.
 
 ```python
 
-import psycopg2
-from pyspark.sql import SparkSession
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List
+from dbadminkit.database_manager import DBManager
+from dbadminkit.core.database_profile import DatabaseProfile
+from dbadminkit.core.crud_types import CRUDOperation
+
+class DatabaseDriver(ABC):
+    @abstractmethod
+    def create(self, table_info: Dict[str, str], data: List[Dict[str, Any]]):
+        pass
+
+    @abstractmethod
+    def read(self, table_info: Dict[str, str], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def update(self, table_info: Dict[str, str], data: Dict[str, Any], filters: Dict[str, Any]):
+        pass
+
+    @abstractmethod
+    def delete(self, table_info: Dict[str, str], filters: Dict[str, Any]):
+        pass
+
+    @abstractmethod
+    def sync_to(self, source_table_info: Dict[str, str], target_manager: DBManager, target_table: str, method: str):
+        pass
 
 class PostgresDriver:
-    def __init__(self, config):
-        self.conn = psycopg2.connect(config.connection_string)
+    def __init__(self, profile):
+        self.manager = profile  # Assume profile provides an engine
 
-    def setup_test_data(self, table_name, record_count, is_scd2=False):
-        with self.conn.cursor() as cur:
-            cur.execute(f"DROP TABLE IF EXISTS {table_name}")
-            if is_scd2:
-                cur.execute(f"""
-                    CREATE TABLE {table_name} (
-                        emp_id INT, name VARCHAR, salary INT, 
-                        is_active BOOLEAN, on_date TIMESTAMP, off_date TIMESTAMP
-                    )
-                """)
-                for i in range(1, record_count + 1):
-                    cur.execute(f"INSERT INTO {table_name} VALUES (%s, %s, %s, %s, %s, %s)", 
-                                (i, f"Name_{i}", i * 100, True, "2025-03-01 00:00:00", None))
-            else:
-                cur.execute(f"""
-                    CREATE TABLE {table_name} (
-                        cust_id INT, name VARCHAR, balance INT
-                    )
-                """)
-                for i in range(1, record_count + 1):
-                    cur.execute(f"INSERT INTO {table_name} VALUES (%s, %s, %s)", 
-                                (i, f"Cust_{i}", i * 50))
-        self.conn.commit()
+    def create_table(self, table_name: str, schema: Dict[str, str]):
+        metadata = MetaData()
+        columns = [Column(col, eval(type_)) for col, type_ in schema.items()]  # Use proper types in practice
+        table = Table(table_name, metadata, *columns)
+        metadata.create_all(self.manager.engine)
+        logger.info(f"Created table {table_name} in Postgres")
 
-    def get_row_count(self, table_name):
-        with self.conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) FROM {table_name}")
-            return cur.fetchone()[0]
+    def create(self, table_info: Dict[str, str], data: List[Dict[str, Any]]):
+        with self.manager.engine.begin() as session:
+            self.manager.get_table(table_info).scd_handler.create(data, session)
 
-class DatabricksDriver:
-    def __init__(self, config):
-        # Mock Spark session for test (replace with real config for live)
-        self.spark = SparkSession.builder.appName("TestDB").master("local").getOrCreate()
+    def read(self, table_info: Dict[str, str], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return self.manager.perform_crud(table_info, CRUDOperation.READ, filters)
 
-    def setup_test_data(self, table_name, record_count):
-        # Simulate Databricks table (mocked)
-        data = [(i, f"Cust_{i}", i * 50) for i in range(1, record_count + 1)]
-        df = self.spark.createDataFrame(data, ["cust_id", "name", "balance"])
-        df.write.mode("overwrite").saveAsTable(table_name)
+    def update(self, table_info: Dict[str, str], data: Dict[str, Any], filters: Dict[str, Any]):
+        self.manager.perform_crud(table_info, CRUDOperation.UPDATE, data, filters)
 
-    def get_row_count(self, table_name):
-        # Simulate Databricks table access (mocked)
-        try:
-            return self.spark.table(table_name).count()
-        except:
-            return 50  # Mocked value matching test data
+    def delete(self, table_info: Dict[str, str], filters: Dict[str, Any]):
+        self.manager.perform_crud(table_info, CRUDOperation.DELETE, filters)
 
+    def sync_to(self, source_table_info: Dict[str, str], target_manager: DBManager, target_table: str, method: str):
+        if method == "jdbc":
+            self.manager.transfer_with_jdbc(source_table_info, target_manager.config)
+        elif method == "csv":
+            self.manager.transfer_with_csv_copy(source_table_info, target_manager)
+        else:
+            raise ValueError(f"Unsupported sync method: {method}")
 ```
 
 ### 4. System Under Test
-**File**: `dbadminkit.core.admin_operations.py` (core logic), `dbadminkit.cli.py` (CLI entry point).
-
-  **Description**: The `DBManager` class provides sync methods (`sync_scd2_versions, transfer_with_jdbc`), and `cli.py` exposes them via the `dbadminkit sync` command.
-
-**Behavior**: 
-    `dbadminkit sync --source postgres:employees --target databricks:employees_target --env test` calls `sync_scd2_versions`.
-    `dbadminkit sync --source databricks:customers --target postgres:customers_target --env test` calls `transfer_with_jdbc`.
-
-**Environment**: 
-    Postgres: Docker container (localhost:5432, dbadminkit_test).
-    Databricks: Mocked locally with Spark (replace with real cluster for live testing).
-
-CLI Code Example (`dbadminkit.cli.py`)
-
-```python
-
-import argparse
-import os
-from dbadminkit.core.admin_operations import DBManager
-from dbadminkit.core.config import DBConfig
-
-def get_config(env, db_type):
-    if env == "test":
-        if db_type == "postgres":
-            return DBConfig(
-                mode="postgres", host="localhost", port=5432,
-                database="dbadminkit_test", user="admin", password="password"
-            )
-        elif db_type == "databricks":
-            return DBConfig(mode="databricks", host="localhost", token="test_token", http_path="/test")
-    elif env == "live":
-        if db_type == "postgres": return DBConfig.live_postgres()
-        elif db_type == "databricks":
-            return DBConfig.live_databricks(
-                host=os.getenv("DATABRICKS_HOST"),
-                token=os.getenv("DATABRICKS_TOKEN"),
-                http_path=os.getenv("DATABRICKS_HTTP_PATH")
-            )
-    raise ValueError(f"Unsupported env: {env} or db_type: {db_type}")
-
-def main():
-    parser = argparse.ArgumentParser(description="Database administration toolkit (dbadminkit)")
-    subparsers = parser.add_subparsers(dest="command")
-    sync_parser = subparsers.add_parser("sync", help="Sync a table between source and target")
-    sync_parser.add_argument("--source", required=True, help="e.g., postgres:employees")
-    sync_parser.add_argument("--target", required=True, help="e.g., databricks:employees_target")
-    sync_parser.add_argument("--env", choices=["test", "live"], default="live")
-    args = parser.parse_args()
-
-    if args.command == "sync":
-        source_db, source_table = args.source.split(":", 1)
-        target_db, target_table = args.target.split(":", 1)
-        source_config = get_config(args.env, source_db)
-        target_config = get_config(args.env, target_db)
-        source_ops = DBManager(source_config)
-        target_ops = DBManager(target_config)
-        source_info = {"table_name": source_table}
-        target_info = {"table_name": target_table}
-        if source_db == "postgres" and target_db == "databricks":
-            source_ops.sync_scd2_versions(target_ops, source_info, target_info)
-        elif source_db == "databricks" and target_db == "postgres":
-            source_ops.transfer_with_jdbc(source_info, target_config)
-        else:
-            raise ValueError(f"Unsupported sync direction: {source_db} to {target_db}")
-
-if __name__ == "__main__":
-    main()
-
-```
-
-Docker Setup Explanation
-Purpose
-Docker simulates a production-like Postgres environment for testing, ensuring isolation and repeatability without affecting live systems.
-
-
-```dockerfile
-FROM postgres:14
-ENV POSTGRES_USER=admin
-ENV POSTGRES_PASSWORD=password
-ENV POSTGRES_DB=dbadminkit_test
-EXPOSE 5432
-```
-
-Base Image: postgres:14 - Uses PostgreSQL 14 as the foundation.
-
-Environment Variables: 
-POSTGRES_USER=admin: Sets the database user.
-
-POSTGRES_PASSWORD=password: Sets the password.
-
-POSTGRES_DB=dbadminkit_test: Creates a test database.
-
-Port: Exposes 5432 for local connections from the host machine.
-
-Usage
-Build: docker build -t dbadminkit-postgres-test .
-
-Run: Managed by the pytest fixture in conftest.py, which starts and stops the container during tests.
-
-Why Docker?
-Isolation: Ensures tests don’t interfere with live Postgres instances.
-
-Repeatability: Provides a fresh database for each test run, avoiding residual data issues.
-
-Production-Like: Mimics a real Postgres instance with network access, closely resembling production behavior.
-
-
-```python
-import pytest
-import docker
-from dbadminkit.core.config import DBConfig
-
-@pytest.fixture(scope="session")
-def docker_client():
-    return docker.from_client()
-
-@pytest.fixture(scope="session")
-def docker_postgres(docker_client):
-    container = docker_client.containers.run(
-        "postgres:14",
-        environment={
-            "POSTGRES_USER": "admin",
-            "POSTGRES_PASSWORD": "password",
-            "POSTGRES_DB": "dbadminkit_test"
-        },
-        ports={"5432/tcp": 5432},
-        detach=True
-    )
-    yield DBConfig(
-        mode="postgres", host="localhost", port=5432,
-        database="dbadminkit_test", user="admin", password="password"
-    )
-    container.stop()
-    container.remove()
-
+Tested from the perspective of a python developer.
 ```
 
 Running the Tests

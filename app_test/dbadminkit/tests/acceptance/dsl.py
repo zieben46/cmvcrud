@@ -44,7 +44,6 @@ class DatabaseDSL:
         logger.info(f"Assertion passed for table {self.selected_table['table_name']}")
         return self
 
-    # Enhancement: Assert a specific record exists
     def assert_record_exists(self, filters: Dict[str, Any], expected_data: Dict[str, Any]):
         if not self.selected_table:
             raise ValueError("No table selected")

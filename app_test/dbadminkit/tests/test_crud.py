@@ -14,18 +14,32 @@ class TestCrud:
             raise ValueError(f"Unsupported database type: {database_type}")
         self.dsl = CrudDSL(self.driver)
 
-    @pytest.mark.parametrize("database_type", ["postgres", "databricks"])
-    def test_crud_operations(self, database_type):
-        self.setUp(database_type)
+    def test_crud_operations_postgres(self):
+        self.setUp("postgres")
         schema = {"emp_id": "Integer", "name": "String"}
         self.dsl.create_table("employees", schema, key="emp_id") \
                 .setup_data([{"emp_id": 1, "name": "Alice"}]) \
                 .execute_crud(CRUDOperation.CREATE, {"emp_id": 2, "name": "Bob"}) \
                 .assert_table_has([{"emp_id": 1, "name": "Alice"}, {"emp_id": 2, "name": "Bob"}])
 
-    @pytest.mark.parametrize("database_type", ["postgres", "databricks"])
-    def test_update(self, database_type):
-        self.setUp(database_type)
+    def test_crud_operations_databricks(self):
+        self.setUp("databricks")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .execute_crud(CRUDOperation.CREATE, {"emp_id": 2, "name": "Bob"}) \
+                .assert_table_has([{"emp_id": 1, "name": "Alice"}, {"emp_id": 2, "name": "Bob"}])
+
+    def test_update_postgres(self):
+        self.setUp("postgres")
+        schema = {"emp_id": "Integer", "name": "String"}
+        self.dsl.create_table("employees", schema, key="emp_id") \
+                .setup_data([{"emp_id": 1, "name": "Alice"}]) \
+                .execute_crud(CRUDOperation.UPDATE, {"name": "Updated"}, {"emp_id": 1}) \
+                .assert_table_has([{"emp_id": 1, "name": "Updated"}])
+
+    def test_update_databricks(self):
+        self.setUp("databricks")
         schema = {"emp_id": "Integer", "name": "String"}
         self.dsl.create_table("employees", schema, key="emp_id") \
                 .setup_data([{"emp_id": 1, "name": "Alice"}]) \
