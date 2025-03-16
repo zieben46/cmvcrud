@@ -6,8 +6,8 @@ This document outlines how to implement acceptance testing for the `dbadminkit` 
 
 ## Farley’s Four-Layer Acceptance Testing Model
 
-<div style="text-align: center;">
 ![alt text](image.png)
+<div style="text-align: center;">
 ***source:  https://www.youtube.com/watch?v=JDD5EEJgpHU&ab_channel=ModernSoftwareEngineering***
 </div>
 
