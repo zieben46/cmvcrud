@@ -41,7 +41,7 @@ The system under test (SUT) is the software application or system being tested. 
 - **Test Case**: "Should sync the `employees` table from Postgres to Databricks with dbadminkit script."
 ---
 
-### 1. Test Case Layer (1/2)
+### 1. Test Case Layer 1/2 (Contains Scenario 1)
 **File**: `tests/acceptance/test_crud.py`  
 High-level executable specifications.
 
@@ -96,9 +96,10 @@ class TestCrud:
 
 ```
 
-### 1. Test Case Layer (2/2)
-**File**: `tests/acceptance/test_crud.py`  
+### 1. Test Case Layer 2/2 (Contains Scenario 2)
+**File**: `tests/acceptance/test_crud.py`
 High-level executable specifications.
+Contains Scenario 2
 
 ```python
 
