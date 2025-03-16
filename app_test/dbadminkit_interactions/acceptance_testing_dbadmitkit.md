@@ -97,9 +97,8 @@ class TestCrud:
 ```
 
 ### 1. Test Case Layer 2/2 (Contains Scenario 2)
-**File**: `tests/acceptance/test_crud.py`
+**File**: `tests/acceptance/test_crud.py`  
 High-level executable specifications.
-Contains Scenario 2
 
 ```python
 
