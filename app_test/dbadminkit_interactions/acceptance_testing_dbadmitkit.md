@@ -7,9 +7,7 @@ This document outlines how to implement acceptance testing for the `dbadminkit` 
 ## Farley’s Four-Layer Acceptance Testing Model
 
 ![alt text](image.png)
-<div style="text-align: center;">
-***source:  https://www.youtube.com/watch?v=JDD5EEJgpHU&ab_channel=ModernSoftwareEngineering***
-</div>
+***https://www.youtube.com/watch?v=JDD5EEJgpHU&ab_channel=ModernSoftwareEngineering***
 
 ### 1. Test Case (Executable Specification)
 This layer contains the actual test cases written using the DSL, executed by the testing framework using the drivers. It defines the scenarios to be tested and verifies results against expected outcomes, ensuring the tests are both reliable and repeatable. This layer bridges the gap between the high-level specifications and the practical execution against the SUT.
