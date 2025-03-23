@@ -74,11 +74,6 @@ async def ingest_cdf(
     background_tasks.add_task(process_changes, changes, target, table_name, db_managers)
     return {"status": "processing", "records": len(changes), "target": target, "table": table_name}
 
-from fastapi import FastAPI, HTTPException, Query, Depends
-from typing import List, Dict, Any
-
-app = FastAPI()
-
 @app.post("/sync-table")
 async def sync_table(
     new_data: List[Dict[str, Any]],
@@ -165,8 +160,45 @@ async def execute_crud(
     result = db_table.perform_crud(crud_type, data)
     return {"status": f"{operation}d", "data": result}
 
+# New Background Task for Syncing Between Databases
+def sync_tables_in_background(
+    table_name: str, source: str, target: str, user: dict, db_managers: Dict[str, "DBManager"]
+):
+    BATCH_SIZE = 10000  # Adjust based on memory and DB capacity
+    source_db_table = db_managers[source].get_table({"table_name": table_name, **get_table_info(source, table_name)})
+    target_db_table = db_managers[target].get_table({"table_name": table_name, **get_table_info(target, table_name)})
+
+    # Fetch target data once (small, 1 record initially)
+    target_data = target_db_table.perform_crud(CRUDOperation.READ, {})
+    target_keys = {row["id"] for row in target_data}  # Assuming 'id' is the key
+
+    # Process source data in batches
+    offset = 0
+    rows_affected = 0
+    try:
+        while True:
+            batch = source_db_table.perform_crud(CRUDOperation.READ, {}, limit=BATCH_SIZE, offset=offset)
+            if not batch:  # End of data
+                break
+            
+            # Process batch (inserts primarily, given target is small initially)
+            insert_data = [row for row in batch if row["id"] not in target_keys]
+            if insert_data:
+                rows_affected += target_db_table.process_list_edits(target_data, insert_data)
+            
+            offset += BATCH_SIZE
+            target_data = insert_data  # Update target_data for next batch comparison
+    finally:
+        # Ensure tables are unlocked even if an error occurs
+        unlock_table(source, table_name, user)
+        unlock_table(target, table_name, user)
+
+    # Log result (could be stored in a DB or file in a real app)
+    print(f"Synced {rows_affected} rows from {source} to {target} for table {table_name}")
+
 @app.post("/sync-between-dbs")
 async def sync_between_dbs(
+    background_tasks: BackgroundTasks,
     table_name: str = Query(..., description="Table name to sync"),
     source: str = Query(..., description="Source DB: 'postgres' or 'databricks'"),
     target: str = Query(..., description="Target DB: 'postgres' or 'databricks'"),
@@ -179,34 +211,26 @@ async def sync_between_dbs(
         raise HTTPException(status_code=423, detail=f"Source table '{table_name}' in {source} is locked")
     if is_table_locked(target, table_name, user):
         raise HTTPException(status_code=423, detail=f"Target table '{table_name}' in {target} is locked")
+    
+    # Lock tables
     lock_table(source, table_name, user)
     lock_table(target, table_name, user)
+    
     try:
-        table_info = get_table_info(source, table_name)
-        source_table_info_full = {"table_name": table_name, **table_info}
-        target_table_info = get_table_info(target, table_name)
-        target_table_info_full = {"table_name": table_name, **target_table_info}
-        
-        source_db_table = db_managers[source].get_table(source_table_info_full)
-        target_db_table = db_managers[target].get_table(target_table_info_full)
-        
-        source_data = source_db_table.perform_crud(CRUDOperation.READ, {})
-        target_data = target_db_table.perform_crud(CRUDOperation.READ, {})
-        
-        source_df = pd.DataFrame(source_data)
-        target_df = pd.DataFrame(target_data)
-        rows_affected = target_db_table.process_dataframe_edits(target_df, source_df)
-        
+        # Offload sync to background task
+        background_tasks.add_task(sync_tables_in_background, table_name, source, target, user, db_managers)
         return {
-            "status": "synced",
+            "status": "sync_started",
             "source": source,
             "target": target,
             "table": table_name,
-            "rows_affected": rows_affected
+            "message": "Sync is running in the background"
         }
-    finally:
+    except Exception as e:
+        # Unlock tables if task setup fails
         unlock_table(source, table_name, user)
         unlock_table(target, table_name, user)
+        raise HTTPException(status_code=500, detail=f"Failed to start sync: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
