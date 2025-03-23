@@ -1,136 +1,52 @@
-from fastapi import FastAPI, Query, Depends, HTTPException
-from sqlalchemy import Table, Column, String, JSON, ForeignKey, DateTime, MetaData, select, update, insert
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine import Engine
-from sqlalchemy.sql import PrimaryKeyConstraint
-import datetime
-from typing import List, Dict, Any
+from fastapi import FastAPI, Query, Depends, HTTPException, status, BackgroundTasks, Body
+from fastapi.security import OAuth2PasswordRequestForm
+from typing import List, Dict, Any, Literal
 import pandas as pd
-from enum import Enum
+from utils import (
+    get_current_user, require_role, process_changes, get_table_info, is_table_locked,
+    lock_table, unlock_table, get_last_sync_version, create_jwt_token, verify_user_password,
+    get_db_managers, get_postgres_engine, postgres_engine
+)
+from dbadminkit.core.crud_types import CRUDOperation
 
-
-# Mock database engines (replace with your actual engines)
-db_managers = {
-    "postgres": DBManager(Engine),  # Replace with actual PostgreSQL engine
-    "databricks": DBManager(Engine)  # Replace with actual Databricks engine
-}
-
-postgres_engine = db_managers["postgres"].engine
-
-# SQLAlchemy metadata and table definitions
-metadata = MetaData()
-
-
-
-# Helper functions for locking and unlocking
-def is_table_locked(db_type: str, table_name: str, user: dict = None) -> bool:
-    """Check if a table is locked by someone other than the current user."""
-    with postgres_engine.connect() as conn:
-        result = conn.execute(
-            select(master_table.c.locked_by)
-            .where(master_table.c.db_type == db_type)
-            .where(master_table.c.table_name == table_name)
-        ).fetchone()
-        if result:
-            locked_by = result[0]
-            if locked_by is None:
-                return False
-            elif user and locked_by == user["username"]:
-                return False
-            else:
-                return True
-        return False
-
-def lock_table(db_type: str, table_name: str, user: dict):
-    """Lock a table if the user is authorized and the table is not already locked."""
-    with postgres_engine.connect() as conn:
-        # Check authorization
-        allowed = conn.execute(
-            select(table_user_groups.c.username)
-            .where(table_user_groups.c.db_type == db_type)
-            .where(table_user_groups.c.table_name == table_name)
-            .where(table_user_groups.c.username == user["username"])
-        ).fetchone()
-        if not allowed:
-            raise HTTPException(status_code=403, detail="You are not authorized to lock this table")
-
-        # Check lock status
-        locked_by = conn.execute(
-            select(master_table.c.locked_by)
-            .where(master_table.c.db_type == db_type)
-            .where(master_table.c.table_name == table_name)
-        ).scalar()
-        if locked_by is not None:
-            raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {db_type} is already locked by {locked_by}")
-
-        # Lock the table
-        conn.execute(
-            update(master_table)
-            .where(master_table.c.db_type == db_type)
-            .where(master_table.c.table_name == table_name)
-            .values(locked_by=user["username"], locked_at=datetime.datetime.utcnow())
-        )
-        conn.commit()
-
-def unlock_table(db_type: str, table_name: str, user: dict):
-    """Unlock a table if the current user holds the lock."""
-    with postgres_engine.connect() as conn:
-        locked_by = conn.execute(
-            select(master_table.c.locked_by)
-            .where(master_table.c.db_type == db_type)
-            .where(master_table.c.table_name == table_name)
-        ).scalar()
-        if locked_by != user["username"]:
-            raise HTTPException(status_code=403, detail="You do not have the lock on this table")
-        conn.execute(
-            update(master_table)
-            .where(master_table.c.db_type == db_type)
-            .where(master_table.c.table_name == table_name)
-            .values(locked_by=None, locked_at=None)
-        )
-        conn.commit()
-
-def get_table_info(db_type: str, table_name: str) -> dict:
-    """Fetch the table_info JSON object from master_table."""
-    with postgres_engine.connect() as conn:
-        result = conn.execute(
-            select(master_table.c.table_info)
-            .where(master_table.c.db_type == db_type)
-            .where(master_table.c.table_name == table_name)
-        ).fetchone()
-        if result:
-            return result[0]
-        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found in {db_type}")
-
-# FastAPI app
 app = FastAPI(title="Database Table Management API")
 
+# Endpoints
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = verify_user_password(form_data.username, form_data.password, postgres_engine)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_jwt_token({"sub": user["username"], "role": user["role"]})
+    return {"access_token": token, "token_type": "bearer"}
 
-def verify_user(credentials: HTTPBasicCredentials = Depends(security)):
+@app.get("/get-authorized-tables")
+async def get_authorized_tables(
+    db_type: str = Query(..., description="Database type: 'postgres' or 'databricks'"),
+    user: dict = Depends(get_current_user),
+    postgres_engine: Engine = Depends(get_postgres_engine)
+):
     with postgres_engine.connect() as conn:
-        # Query the stored hashed password for the given username
-        result = conn.execute(
-            select(users.c.password)
-            .where(users.c.username == credentials.username)
-        ).fetchone()
-        
-        if result:
-            stored_hash = result[0].encode('utf-8')  # Convert stored hash to bytes
-            # Verify the provided password against the stored hash
-            if bcrypt.checkpw(credentials.password.encode('utf-8'), stored_hash):
-                return {"username": credentials.username}
-        # Raise an error if the username doesn’t exist or password doesn’t match
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"}
-        )
+        if user["role"] == "admin":
+            tables = conn.execute(
+                select(master_table.c.table_name)
+                .where(master_table.c.db_type == db_type)
+            ).fetchall()
+            table_list = [row[0] for row in tables]
+        else:
+            tables = conn.execute(
+                select(table_user_groups.c.table_name)
+                .where(table_user_groups.c.db_type == db_type)
+                .where(table_user_groups.c.username == user["username"])
+            ).fetchall()
+            table_list = [row[0] for row in tables]
+        return {"tables": table_list if table_list else []}
 
 @app.post("/lock-table")
 async def lock_table_endpoint(
     db_type: str = Query(..., description="Database type: 'postgres' or 'databricks'"),
     table_name: str = Query(..., description="Table to lock"),
-    user: dict = Depends(verify_user)
+    user: dict = Depends(get_current_user)
 ):
     lock_table(db_type, table_name, user)
     return {"status": "locked", "db_type": db_type, "table": table_name, "locked_by": user["username"]}
@@ -139,77 +55,142 @@ async def lock_table_endpoint(
 async def unlock_table_endpoint(
     db_type: str = Query(..., description="Database type: 'postgres' or 'databricks'"),
     table_name: str = Query(..., description="Table to unlock"),
-    user: dict = Depends(verify_user)
+    user: dict = Depends(get_current_user)
 ):
     unlock_table(db_type, table_name, user)
     return {"status": "unlocked", "db_type": db_type, "table": table_name}
 
-@app.post("/execute-crud")
-async def execute_crud(
-    operation: str = Query(..., description="CRUD operation: 'read', 'create', etc."),
-    target: str = Query(..., description="Target database: 'postgres' or 'databricks'"),
-    table_name: str = Query(..., description="Table name"),
-    params: dict = {},  # Adjust based on your actual CRUD params
-    user: dict = Depends(verify_user)
+@app.post("/ingest-cdf")
+async def ingest_cdf(
+    changes: List[Dict[str, Any]],
+    target: str = Query(..., description="Target DB: 'postgres' or 'databricks'"),
+    table_name: str = Query(..., description="Table to apply changes to"),
+    background_tasks: BackgroundTasks = None,
+    user: dict = Depends(require_role("editor")),
+    db_managers: Dict[str, DBManager] = Depends(get_db_managers)
 ):
     if is_table_locked(target, table_name, user):
-        raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {target} is locked by another user")
-    
-    table_info = get_table_info(target, table_name)
-    table_info_full = {"table_name": table_name, **table_info}
-    db_table = db_managers[target].get_table(table_info_full)
-    
-    data = db_table.perform_crud(CRUDOperation(operation.upper()), params)
-    return {"status": "success", "data": data}
+        raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {target} is locked")
+    background_tasks.add_task(process_changes, changes, target, table_name, db_managers)
+    return {"status": "processing", "records": len(changes), "target": target, "table": table_name}
 
 @app.post("/sync-table")
 async def sync_table(
-    target: str = Query(..., description="Target database: 'postgres' or 'databricks'"),
+    new_data: List[Dict[str, Any]],
+    target: str = Query(..., description="Target DB: 'postgres' or 'databricks'"),
     table_name: str = Query(..., description="Table to sync"),
-    new_data: List[Dict[str, Any]],  # Data to sync
-    user: dict = Depends(verify_user)
+    user: dict = Depends(require_role("editor")),
+    db_managers: Dict[str, DBManager] = Depends(get_db_managers)
 ):
     if is_table_locked(target, table_name, user):
-        raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {target} is locked by another user")
+        raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {target} is locked")
     
     table_info = get_table_info(target, table_name)
     table_info_full = {"table_name": table_name, **table_info}
     db_table = db_managers[target].get_table(table_info_full)
-    
     current_data = db_table.perform_crud(CRUDOperation.READ, {})
     current_df = pd.DataFrame(current_data)
     new_df = pd.DataFrame(new_data)
     rows_affected = db_table.process_dataframe_edits(current_df, new_df)
-    
     return {"status": "synced", "rows_affected": rows_affected}
+
+@app.get("/get-last-sync-version")
+async def get_last_sync_version_endpoint(
+    db_type: str = Query(..., description="Database type: 'postgres' or 'databricks'"),
+    table_name: str = Query(..., description="Table name"),
+    user: dict = Depends(get_current_user)
+):
+    version = get_last_sync_version(db_type, table_name)
+    return {"db_type": db_type, "table_name": table_name, "last_version": version}
+
+@app.post("/update-sync-version")
+async def update_sync_version(
+    db_type: str = Query(..., description="Database type: 'postgres' or 'databricks'"),
+    table_name: str = Query(..., description="Table name"),
+    version: int = Body(..., embed=True),
+    user: dict = Depends(require_role("editor")),
+    postgres_engine: Engine = Depends(get_postgres_engine)
+):
+    with postgres_engine.connect() as conn:
+        conn.execute(
+            update(sync_metadata)
+            .where(sync_metadata.c.db_type == db_type)
+            .where(sync_metadata.c.table_name == table_name)
+            .values(last_version=version)
+            .on_conflict_do_update(
+                index_elements=["db_type", "table_name"],
+                set_={"last_version": version}
+            )
+        )
+        conn.commit()
+    return {"status": "version_updated", "db_type": db_type, "table": table_name, "version": version}
+
+@app.post("/execute-crud")
+async def execute_crud(
+    operation: Literal["insert", "read", "update", "delete"],
+    target: str = Query(..., description="Target DB: 'postgres' or 'databricks'"),
+    table_name: str = Query(..., description="Table to operate on"),
+    data: Dict[str, Any] = None,
+    user: dict = Depends(get_current_user),
+    db_managers: Dict[str, DBManager] = Depends(get_db_managers)
+):
+    if operation != "read" and is_table_locked(target, table_name, user):
+        raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {target} is locked by another user")
+    table_info = get_table_info(target, table_name)
+    table_info_full = {"table_name": table_name, **table_info}
+    db_table = db_managers[target].get_table(table_info_full)
+    crud_type = CRUDOperation(operation.upper())
+    if operation == "read":
+        result = db_table.perform_crud(crud_type, data or {})
+        return {"status": "read", "data": result}
+    if not data:
+        raise HTTPException(status_code=400, detail="Data required for this operation")
+    result = db_table.perform_crud(crud_type, data)
+    return {"status": f"{operation}d", "data": result}
+
+@app.post("/sync-between-dbs")
+async def sync_between_dbs(
+    table_name: str = Query(..., description="Table name to sync"),
+    source: str = Query(..., description="Source DB: 'postgres' or 'databricks'"),
+    target: str = Query(..., description="Target DB: 'postgres' or 'databricks'"),
+    user: dict = Depends(require_role("editor")),
+    db_managers: Dict[str, DBManager] = Depends(get_db_managers)
+):
+    if source == target:
+        raise HTTPException(status_code=400, detail="Source and target must be different")
+    if is_table_locked(source, table_name, user):
+        raise HTTPException(status_code=423, detail=f"Source table '{table_name}' in {source} is locked")
+    if is_table_locked(target, table_name, user):
+        raise HTTPException(status_code=423, detail=f"Target table '{table_name}' in {target} is locked")
+    lock_table(source, table_name, user)
+    lock_table(target, table_name, user)
+    try:
+        table_info = get_table_info(source, table_name)
+        source_table_info_full = {"table_name": table_name, **table_info}
+        target_table_info = get_table_info(target, table_name)
+        target_table_info_full = {"table_name": table_name, **target_table_info}
+        
+        source_db_table = db_managers[source].get_table(source_table_info_full)
+        target_db_table = db_managers[target].get_table(target_table_info_full)
+        
+        source_data = source_db_table.perform_crud(CRUDOperation.READ, {})
+        target_data = target_db_table.perform_crud(CRUDOperation.READ, {})
+        
+        source_df = pd.DataFrame(source_data)
+        target_df = pd.DataFrame(target_data)
+        rows_affected = target_db_table.process_dataframe_edits(target_df, source_df)
+        
+        return {
+            "status": "synced",
+            "source": source,
+            "target": target,
+            "table": table_name,
+            "rows_affected": rows_affected
+        }
+    finally:
+        unlock_table(source, table_name, user)
+        unlock_table(target, table_name, user)
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# New endpoint to fetch authorized tables
-@app.get("/get-authorized-tables")
-async def get_authorized_tables(
-    db_type: str = Query(..., description="Database type: 'postgres' or 'databricks'"),
-    user: dict = Depends(verify_user)
-):
-    with postgres_engine.connect() as conn:
-        if user["role"] == "admin":
-            # Admins see all tables for the given db_type
-            tables = conn.execute(
-                select(master_table.c.table_name)
-                .where(master_table.c.db_type == db_type)
-            ).fetchall()
-            table_list = [row[0] for row in tables]
-        else:
-            # Non-admins see only their assigned tables
-            tables = conn.execute(
-                select(table_user_groups.c.table_name)
-                .where(table_user_groups.c.db_type == db_type)
-                .where(table_user_groups.c.username == user["username"])
-            ).fetchall()
-            table_list = [row[0] for row in tables]
-        
-        if not table_list:
-            return {"tables": [], "message": "No tables assigned to this user"}
-        return {"tables": table_list}
