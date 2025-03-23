@@ -1,48 +1,54 @@
 from pyspark.sql import SparkSession
 import requests
+import time
+
+# Configurable parameters
+SOURCE_TABLE = "your_catalog.your_schema.source_table"
+VERSION_TO_SYNC = 5
+TARGET_DB = "postgres"
+TARGET_TABLE = "target_table"
+API_URL = "http://localhost:8000"
+BATCH_SIZE = 10000  # Matches MAX_ROWS in sync_table
+AUTH_HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": "Basic YWRtaW46cGFzc3dvcmQ="  # Base64 "admin:password"
+}
 
 # Initialize Spark session
 spark = SparkSession.builder.appName("InitialTableSync").getOrCreate()
 
-# Source table and version
-source_table = "your_catalog.your_schema.source_table"
-version_to_sync = 5  # Replace with the desired version
-
 # Read table at specific version
-df = spark.read.option("versionAsOf", version_to_sync).table(source_table)
+df = spark.read.option("versionAsOf", VERSION_TO_SYNC).table(SOURCE_TABLE)
 
-# Batch size for manageable chunks (e.g., 1M rows)
-batch_size = 1000000
+# Repartition for efficient batching
+num_partitions = (df.count() + BATCH_SIZE - 1) // BATCH_SIZE
+df_repartitioned = df.repartition(num_partitions)
+batch_data = df_repartitioned.rdd.mapPartitions(lambda partition: [row.asDict() for row in partition]).collect()
 
-# Collect and send in batches
-total_rows = df.count()
-print(f"Total rows to sync: {total_rows}")
-
-for offset in range(0, total_rows, batch_size):
-    batch_df = df.limit(batch_size).offset(offset)
-    batch_data = [row.asDict() for row in batch_df.collect()]
+# Sync in batches
+for i in range(0, len(batch_data), BATCH_SIZE):
+    batch = batch_data[i:i + BATCH_SIZE]
+    if len(batch) > BATCH_SIZE:  # Shouldn’t happen, but safety check
+        print(f"Skipping oversized batch at index {i}: {len(batch)} rows")
+        continue
     
-    url = "http://localhost:8000/sync-table"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": "Basic YWRtaW46cGFzc3dvcmQ="  # Base64 "admin:password"
-    }
-    params = {"target": "postgres", "table_name": "target_table"}
+    url = f"{API_URL}/sync-table"
+    params = {"target": TARGET_DB, "table_name": TARGET_TABLE}
     
-    response = requests.post(url, json=batch_data, headers=headers, params=params)
+    response = requests.post(url, json=batch, headers=AUTH_HEADERS, params=params)
     if response.status_code == 200:
-        print(f"Synced {len(batch_data)} rows at offset {offset}")
+        print(f"Synced {len(batch)} rows in batch {i // BATCH_SIZE + 1}")
+        # Update sync version
+        requests.post(
+            f"{API_URL}/update-sync-version",
+            json={"db_type": TARGET_DB, "table_name": TARGET_TABLE, "version": VERSION_TO_SYNC},
+            headers=AUTH_HEADERS
+        )
     else:
-        print(f"Failed at offset {offset}: {response.text}")
+        print(f"Failed at batch {i // BATCH_SIZE + 1}: {response.status_code} - {response.text}")
         break
+    
+    time.sleep(1)  # Rate limiting to avoid overwhelming API
 
-# Store the synced version in sync_metadata
-with spark.sql("DESCRIBE HISTORY " + source_table).limit(1).collect()[0] as latest:
-    synced_version = version_to_sync
-url = "http://localhost:8000/update-sync-version"
-requests.post(
-    url,
-    json={"db_type": "postgres", "table_name": "target_table", "version": synced_version},
-    headers=headers
-)
-print(f"Initial sync complete at version {synced_version}")
+print(f"Initial sync complete at version {VERSION_TO_SYNC}")
+spark.stop()

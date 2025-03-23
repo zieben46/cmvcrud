@@ -34,32 +34,36 @@ class CRUDBase:
                 applied_count += len(deletes)
         return applied_count
 
-    def process_dataframe_edits(self, original_df: pd.DataFrame, edited_df: pd.DataFrame) -> int:
+    def process_list_edits(self, original_data: List[Dict], new_data: List[Dict]) -> int:
         applied_count = 0
-        with self.engine.begin() as session:  # Use a transaction
-            # Detect deletes
-            deleted_rows = original_df[~original_df[self.key].isin(edited_df[self.key])]
-            if not deleted_rows.empty:
-                delete_data = [{self.key: row[self.key]} for _, row in deleted_rows.iterrows()]
-                self.scd_handler.delete(delete_data, session)
-                applied_count += len(delete_data)
+        try:
+            with self.engine.begin() as session:
+                # Convert to dicts for faster lookups
+                original_dict = {row[self.key]: row for row in original_data}
+                new_dict = {row[self.key]: row for row in new_data}
 
-            # Detect inserts and updates
-            insert_data = []
-            update_data = []
-            for _, row in edited_df.iterrows():
-                row_dict = row.to_dict()
-                existing = original_df[original_df[self.key] == row[self.key]]
-                if existing.empty:
-                    insert_data.append(row_dict)
-                elif not existing.iloc[0].equals(row):
-                    update_data.append({**row_dict, "filters": {self.key: row[self.key]}})
-            
-            if insert_data:
-                self.scd_handler.create(insert_data, session)
-                applied_count += len(insert_data)
-            if update_data:
-                self.scd_handler.update(update_data, session)
-                applied_count += len(update_data)
+                # Detect deletes
+                delete_data = [{self.key: k} for k in original_dict if k not in new_dict]
+                if delete_data:
+                    self.scd_handler.delete(delete_data, session)
+                    applied_count += len(delete_data)
+
+                # Detect inserts and updates
+                insert_data = []
+                update_data = []
+                for key, new_row in new_dict.items():
+                    if key not in original_dict:
+                        insert_data.append(new_row)
+                    elif original_dict[key] != new_row:  # Direct dict comparison
+                        update_data.append({**new_row, "filters": {self.key: key}})
+
+                if insert_data:
+                    self.scd_handler.create(insert_data, session)
+                    applied_count += len(insert_data)
+                if update_data:
+                    self.scd_handler.update(update_data, session)
+                    applied_count += len(update_data)
+        except Exception as e:
+            raise Exception(f"Failed to process edits: {str(e)}")
         
         return applied_count

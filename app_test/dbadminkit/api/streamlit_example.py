@@ -1,9 +1,11 @@
 import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
+import pandas as pd  # Still used for display, but not for sync
 
 # API base URL
 API_URL = "http://localhost:8000"
+MAX_ROWS = 10000  # Match sync_table limit
 
 # Initialize session state
 if "logged_in" not in st.session_state:
@@ -21,7 +23,6 @@ if not st.session_state.logged_in:
     password = st.text_input("Password", type="password")
     if st.button("Login"):
         auth = HTTPBasicAuth(username, password)
-        # Test authentication by fetching authorized tables (postgres as default)
         response = requests.get(
             f"{API_URL}/get-authorized-tables?db_type=postgres",
             auth=auth
@@ -89,24 +90,34 @@ else:
             auth=auth
         )
         if response.status_code == 200:
-            data = response.json()["data"]
+            data = response.json()["data"]  # List of dicts
+            if len(data) > MAX_ROWS:
+                st.warning(f"Data exceeds {MAX_ROWS} rows; only first {MAX_ROWS} rows shown.")
+                data = data[:MAX_ROWS]
+            
+            # Convert to DataFrame for display only
+            df = pd.DataFrame(data)
             st.write("Current Data:")
-            edited_data = st.data_editor(data, num_rows="dynamic")
+            edited_df = st.data_editor(df, num_rows="dynamic")
+            edited_data = edited_df.to_dict('records')  # Convert back to list of dicts for API
         else:
             st.error("Failed to fetch data")
             edited_data = []
 
         # Submit changes
         if st.button("Submit Changes"):
-            response = requests.post(
-                f"{API_URL}/sync-table?target={db_type}&table_name={st.session_state.table_name}",
-                json=edited_data,
-                auth=auth
-            )
-            if response.status_code == 200:
-                st.success("Table synced successfully!")
+            if len(edited_data) > MAX_ROWS:
+                st.error(f"Cannot sync: Edited data exceeds {MAX_ROWS} rows.")
             else:
-                st.error(response.json().get("detail", "Failed to sync table"))
+                response = requests.post(
+                    f"{API_URL}/sync-table?target={db_type}&table_name={st.session_state.table_name}",
+                    json=edited_data,
+                    auth=auth
+                )
+                if response.status_code == 200:
+                    st.success(f"Table synced successfully! Rows affected: {response.json()['rows_affected']}")
+                else:
+                    st.error(response.json().get("detail", "Failed to sync table"))  # Show detailed error
 
         # Unlock table
         if st.button("Unlock Table"):

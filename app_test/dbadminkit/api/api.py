@@ -74,6 +74,11 @@ async def ingest_cdf(
     background_tasks.add_task(process_changes, changes, target, table_name, db_managers)
     return {"status": "processing", "records": len(changes), "target": target, "table": table_name}
 
+from fastapi import FastAPI, HTTPException, Query, Depends
+from typing import List, Dict, Any
+
+app = FastAPI()
+
 @app.post("/sync-table")
 async def sync_table(
     new_data: List[Dict[str, Any]],
@@ -82,17 +87,29 @@ async def sync_table(
     user: dict = Depends(require_role("editor")),
     db_managers: Dict[str, DBManager] = Depends(get_db_managers)
 ):
+    # Limit input size
+    MAX_ROWS = 10000  # Adjust as needed
+    if len(new_data) > MAX_ROWS:
+        raise HTTPException(status_code=413, detail=f"Payload too large, max {MAX_ROWS} rows allowed")
+    
+    # Check if table is locked
     if is_table_locked(target, table_name, user):
         raise HTTPException(status_code=423, detail=f"Table '{table_name}' in {target} is locked")
     
+    # Fetch table info and manager
     table_info = get_table_info(target, table_name)
     table_info_full = {"table_name": table_name, **table_info}
     db_table = db_managers[target].get_table(table_info_full)
-    current_data = db_table.perform_crud(CRUDOperation.READ, {})
-    current_df = pd.DataFrame(current_data)
-    new_df = pd.DataFrame(new_data)
-    rows_affected = db_table.process_dataframe_edits(current_df, new_df)
-    return {"status": "synced", "rows_affected": rows_affected}
+    
+    # Fetch current data with limit
+    current_data = db_table.perform_crud(CRUDOperation.READ, {}, limit=MAX_ROWS)
+    
+    # Process edits and return result
+    try:
+        rows_affected = db_table.process_list_edits(current_data, new_data)
+        return {"status": "synced", "rows_affected": rows_affected}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
 
 @app.get("/get-last-sync-version")
 async def get_last_sync_version_endpoint(
