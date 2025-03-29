@@ -30,9 +30,7 @@ while True:
 
 #     Pros
 # Minimal dependencies (just the schedule package).
-
 # No external services or database required.
-
 # Runs in a single Python script.
 
 # Cons

@@ -14,13 +14,10 @@ scheduler.start()
 
 # Pros
 # Lightweight and Python-only.
-
 # Supports cron-like scheduling and background execution.
-
 # Can integrate with databases (optional, not required).
 
 # Cons
 # No built-in UI (though you could add one with Flask).
-
 # Less feature-rich than Airflow for complex workflows.
 
