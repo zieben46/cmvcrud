@@ -9,10 +9,10 @@ class DBEngine:
         self.Session = sessionmaker(bind=self.engine)
 
     def _create_engine(self):
-        if self.config.mode == DBMode.IN_MEMORY:
-            return create_engine("sqlite:///:memory:", echo=True)
-        elif self.config.mode in (DBMode.LIVE, DBMode.TEST):
-            if not self.config.connection_string:
+        if self.config.database ==databricks
+            return create_engine(databricks, echo=True)
+        elif self.config.database =  postgres
+            return create_engine(postgres, echo=True)
                 raise ValueError("Connection string required for live/test mode")
             return create_engine(self.config.connection_string, echo=self.config.mode == DBMode.TEST)
         else:
