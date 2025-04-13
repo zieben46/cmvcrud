@@ -2,16 +2,21 @@ import logging
 import pandas as pd
 import pyodbc
 from typing import Dict, Any, List
-from sqlalchemy import create_engine, Table, MetaData, Column, BigInteger, String, Boolean, DateTime
+from sqlalchemy import create_engine, Table, MetaData, Column, BigInteger, String, DateTime
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from dbadminkit.core.table_interface import TableInterface
 from app_test.dbadminkit.core.crud_types import CRUDOperation
-from app_test.dbadminkit.models.databricks.scd_types import SCDType2Handler  # Use your SCDType2Handler
+from app_test.dbadminkit.models.databricks.scd_types import (
+    SCDType0Handler,
+    SCDType1Handler,
+    SCDType2Handler
+)
 from dbadminkit.core.crud_base import CRUDBase
 from sqlalchemy.sql import text
 import math
 from datetime import datetime
+from sqlalchemy import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +28,7 @@ class DBTable(TableInterface):
         self.table_info = table_info
         self.table_name = table_info["table_name"]
         self.key = table_info.get("key", "user_id")
-        self.scd_type = table_info.get("scd_type", "type2")
+        self.scd_type = table_info.get("scd_type", "type1")  # Default to Type 1 for large table
         self.metadata = MetaData()
         self.table = Table(self.table_name, self.metadata, autoload_with=self.pg_engine)
         self.history_table = Table(
@@ -39,16 +44,21 @@ class DBTable(TableInterface):
         self.scd_handler = self._get_scd_handler()
         self.crud_base = CRUDBase(self.table, self.pg_engine, self.key, self.scd_handler)
         self.chunk_size = 50000  # For initial load
-        self.cdf_chunk_size = 1000  # For CDF
+        self.cdf_chunk_size = 1000  # For daily CDF
 
     def get_scdtype(self) -> str:
         return self.scd_type
 
     def _get_scd_handler(self):
-        if self.scd_type == "type2":
-            return SCDType2Handler(self.table, self.key)
-        else:
-            raise NotImplementedError("Only SCD Type 2 implemented for Databricks SQL to PostgreSQL")
+        handlers = {
+            "type0": SCDType0Handler,
+            "type1": SCDType1Handler,
+            "type2": SCDType2Handler
+        }
+        handler_class = handlers.get(self.scd_type)
+        if not handler_class:
+            raise ValueError(f"Unsupported SCD type: {self.scd_type}")
+        return handler_class(self.table, self.key)
 
     def perform_crud(self, crud_type: CRUDOperation, data: Dict[str, Any]) -> Any:
         with self.pg_engine.begin() as session:
@@ -69,7 +79,6 @@ class DBTable(TableInterface):
         return self.crud_base.process_dataframe_edits(original_df, edited_df)
 
     def get_db_table_schema(self) -> Dict[str, Any]:
-        from sqlalchemy import inspect
         inspector = inspect(self.pg_engine)
         columns = inspector.get_columns(self.table_name)
         return {col["name"]: str(col["type"]) for col in columns}
@@ -79,7 +88,8 @@ class DBTable(TableInterface):
         cursor = self.db_conn.cursor()
         cursor.execute(query, params or {})
         while True:
-            rows = cursor.fetchmany(self.chunk_size if "table_changes" not in query else self.cdf_chunk_size)
+            chunk_size = self.cdf_chunk_size if "table_changes" in query else self.chunk_size
+            rows = cursor.fetchmany(chunk_size)
             if not rows:
                 break
             chunk = pd.DataFrame([dict(zip([col[0] for col in cursor.description], row)) for row in rows])
@@ -90,17 +100,17 @@ class DBTable(TableInterface):
         """Transfer full table from Databricks to PostgreSQL."""
         query = f"SELECT * FROM {databricks_table} ORDER BY {self.key}"
         total_chunks = math.ceil(total_records / self.chunk_size)
-        
+
         for i, chunk_df in enumerate(self.read_databricks_chunk(query)):
             if chunk_df.empty:
                 break
-            # Convert chunk to CDC-like format for CRUDBase
+            # Convert to CDC-like format for CRUDBase
             cdc_records = [
                 {"operation": "INSERT", "data": row, "timestamp": datetime.utcnow()}
                 for _, row in chunk_df.iterrows()
             ]
-            self.process_cdc_logs(cdc_records)
-            
+            processed = self.process_cdc_logs(cdc_records)
+
             # Log to history table
             with self.pg_engine.begin() as conn:
                 conn.execute(
@@ -108,7 +118,7 @@ class DBTable(TableInterface):
                         version=0,
                         timestamp=datetime.utcnow(),
                         operation="INITIAL_LOAD",
-                        record_count=len(chunk_df)
+                        record_count=processed
                     )
                 )
             print(f"Processed chunk {i+1}/{total_chunks}")
@@ -142,7 +152,7 @@ class DBTable(TableInterface):
                 })
             # Process via CRUDBase
             processed = self.process_cdc_logs(cdc_records)
-            
+
             # Log to history table
             if processed > 0:
                 with self.pg_engine.begin() as conn:
@@ -173,12 +183,8 @@ class DBTable(TableInterface):
                 }
                 for _, row in history_df.iterrows()
             ]
-            self.crud_base.process_cdc_logs(cdc_records)  # Use CRUDBase for history
+            self.crud_base.process_cdc_logs(cdc_records)
         print("History synced.")
-
-
-
-
 
 
 
@@ -208,15 +214,15 @@ class DBTable(TableInterface):
 # table_info = {
 #     "table_name": "users",
 #     "key": "user_id",
-#     "scd_type": "type2"
+#     "scd_type": "type1"  # Type 1 for large table
 # }
 
 # # Get DBTable instance
-# table = db_manager.get_table(table_info)
-
-# # Override Databricks connection (since DBManager uses engine, we patch DBTable)
-# table.db_conn_str = databricks_conn_str
-# table.db_conn = pyodbc.connect(databricks_conn_str)
+# table = DBTable(
+#     postgres_engine=db_manager.engine.engine,
+#     databricks_conn_str=databricks_conn_str,
+#     table_info=table_info
+# )
 
 # # Initial load
 # table.transfer_initial_load(databricks_table="users_delta")
