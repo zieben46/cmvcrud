@@ -26,11 +26,6 @@ engine = create_engine(
     echo=True,
 )
 
-# Reflect the existing table
-Base = automap_base()
-Base.prepare(autoload_with=engine)
-SampleObject = Base.classes.pysql_sqlalchemy_example_table
-
 # Sample data with multiple records
 sample_data = [
     {
@@ -75,9 +70,9 @@ sample_data = [
 ]
 
 # CRUD Functions
-def create_records(session, data_list):
+def create_records(session, SampleObject, data_list):
     """Create multiple records from a list of dictionaries."""
-    created_ids = []
+    créée_ids = []
     for data in data_list:
         record = SampleObject(**data)
         session.add(record)
@@ -86,7 +81,7 @@ def create_records(session, data_list):
     print(f"Created {len(created_ids)} records with bigint_col: {created_ids}")
     return created_ids
 
-def read_records(session, bigint_cols):
+def read_records(session, SampleObject, bigint_cols):
     """Read records matching the given bigint_col values."""
     stmt = select(SampleObject).where(SampleObject.bigint_col.in_(bigint_cols))
     records = session.execute(stmt).scalars().all()
@@ -94,7 +89,7 @@ def read_records(session, bigint_cols):
     print(f"Read {len(result)} records: {result}")
     return result
 
-def update_records(session, bigint_cols, update_data):
+def update_records(session, SampleObject, bigint_cols, update_data):
     """Update records with the given bigint_col values using a dictionary of new values."""
     stmt = select(SampleObject).where(SampleObject.bigint_col.in_(bigint_cols))
     records = session.execute(stmt).scalars().all()
@@ -107,7 +102,7 @@ def update_records(session, bigint_cols, update_data):
     print(f"Updated {len(updated_ids)} records with bigint_col: {updated_ids}")
     return updated_ids
 
-def delete_records(session, bigint_cols):
+def delete_records(session, SampleObject, bigint_cols):
     """Delete records with the given bigint_col values."""
     stmt = select(SampleObject).where(SampleObject.bigint_col.in_(bigint_cols))
     records = session.execute(stmt).scalars().all()
@@ -119,33 +114,45 @@ def delete_records(session, bigint_cols):
     print(f"Deleted {len(deleted_ids)} records with bigint_col: {deleted_ids}")
     return deleted_ids
 
-# Execute CRUD operations
-with Session(engine) as session:
-    # CREATE: Insert multiple records
-    bigint_cols = create_records(session, sample_data)
+def execute_crud_operations(table_name):
+    """Execute CRUD operations on the specified table."""
+    # Reflect the existing table
+    Base = automap_base()
+    Base.prepare(autoload_with=engine)
+    
+    try:
+        SampleObject = Base.classes[table_name]  # Dynamically reflect the table
+    except KeyError:
+        raise ValueError(f"Table '{table_name}' not found in the database schema.")
 
-    # READ: Retrieve the created records
-    read_records(session, bigint_cols)
+    with Session(engine) as session:
+        # CREATE: Insert multiple records
+        bigint_cols = create_records(session, SampleObject, sample_data)
 
-    # UPDATE: Update specific fields for the records
-    update_values = {
-        "string_col": "updated",
-        "int_col": 9999,
-        "boolean_col": True,
-    }
-    update_records(session, bigint_cols, update_values)
+        # READ: Retrieve the created records
+        read_records(session, SampleObject, bigint_cols)
 
-    # READ: Verify the updated records
-    read_records(session, bigint_cols)
+        # UPDATE: Update specific fields for the records
+        update_values = {
+            "string_col": "updated",
+            "int_col": 9999,
+            "boolean_col": True,
+        }
+        update_records(session, SampleObject, bigint_cols, update_values)
 
-    # DELETE: Remove the records
-    delete_records(session, bigint_cols)
+        # READ: Verify the updated records
+        read_records(session, SampleObject, bigint_cols)
 
-    # READ: Confirm deletion
-    read_records(session, bigint_cols)
+        # DELETE: Remove the records
+        delete_records(session, SampleObject, bigint_cols)
 
-# Optional: Clean up (uncomment to drop the table, but be cautious)
-# Base.metadata.drop_all(engine)
+        # READ: Confirm deletion
+        read_records(session, SampleObject, bigint_cols)
+
+# Example usage
+if __name__ == "__main__":
+    table_name = "test_table"  # Replace with the desired table name
+    execute_crud_operations(table_name)
 
 
 
