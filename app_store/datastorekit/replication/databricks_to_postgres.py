@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy.ext.automap import automap_base
 from databricks.sqlalchemy import TIMESTAMP, TINYINT
 from datastorekit.orchestrator import DataStoreOrchestrator
-from datastorekit.profile import DatabaseProfile
 from datastorekit.models.db_table import DBTable
 from typing import List, Dict, Any
 
@@ -20,6 +19,8 @@ class DatabricksToPostgresReplicator:
         self.source_schema = "default"
         self.target_db = "spend_plan_db"
         self.target_schema = "safe_user"
+        self.batch_size = 100000  # Batch size for full load
+        self.cdf_batch_size = 1000  # Batch size for CDF merge
 
     def replicate(self, source_table: str, target_table: str, history_table: str, max_changes: int = 20_000_000):
         """Replicate data from a Databricks table to a PostgreSQL table, maintaining history.
@@ -35,15 +36,20 @@ class DatabricksToPostgresReplicator:
         """
         try:
             # Get source and target tables
-            source_table_info = {"table_name": source_table, "scd_type": "type1", "key": "id"}
-            target_table_info = {"table_name": target_table, "scd_type": "type1", "key": "id"}
+            source_table_info = {"table_name": source_table, "scd_type": "type1", "key": "unique_id"}
+            target_table_info = {"table_name": target_table, "scd_type": "type1", "key": "unique_id"}
             history_table_info = {"table_name": history_table, "scd_type": "type0", "key": "version"}
             source_table = self.orchestrator.get_table(f"{self.source_db}:{self.source_schema}", source_table_info)
             target_table = self.orchestrator.get_table(f"{self.target_db}:{self.target_schema}", target_table_info)
             history_table = self.orchestrator.get_table(f"{self.target_db}:{self.target_schema}", history_table_info)
 
-            # Fetch Databricks history
-            history_data = self._fetch_databricks_history(source_table)
+            # Check if history table exists
+            target_tables = self.orchestrator.list_tables(self.target_db, self.target_schema)
+            history_table_exists = history_table.table_name in target_tables
+
+            # Fetch Databricks history since last load
+            max_version = self._get_max_history_version(history_table) if history_table_exists else None
+            history_data = self._fetch_databricks_history(source_table, max_version)
             if not history_data:
                 logger.error("No history data found for source table")
                 return False
@@ -51,11 +57,17 @@ class DatabricksToPostgresReplicator:
             # Save history to PostgreSQL (SCD Type 0)
             self._save_history(history_table, history_data)
 
+            # If history table was missing, perform full load and drop target table
+            if not history_table_exists:
+                logger.info("History table missing. Performing full load and dropping target table if exists.")
+                self._drop_and_initialize_table(source_table, target_table)
+                self._full_load(source_table, target_table)
+                return True
+
             # Calculate changes and check for schema changes
             total_changes, version_range, has_schema_change = self._analyze_history(history_data)
 
             # Check if target table exists
-            target_tables = self.orchestrator.list_tables(self.target_db, self.target_schema)
             table_exists = target_table.table_name in target_tables
 
             if not table_exists:
@@ -76,12 +88,21 @@ class DatabricksToPostgresReplicator:
             logger.error(f"Replication failed: {e}")
             return False
 
-    def _fetch_databricks_history(self, source_table: DBTable) -> List[Dict]:
-        """Fetch the history of the Databricks table using DESCRIBE HISTORY."""
-        with source_table.adapter.session_factory() as session:
+    def _get_max_history_version(self, history_table: DBTable) -> int:
+        """Get the maximum version from the history table."""
+        with history_table.adapter.session_factory() as session:
             result = session.execute(
-                text(f"DESCRIBE HISTORY {self.source_schema}.{source_table.table_name}")
-            ).fetchall()
+                text(f"SELECT MAX(version) FROM {self.target_schema}.{history_table.table_name}")
+            ).scalar()
+            return result if result is not None else 0
+
+    def _fetch_databricks_history(self, source_table: DBTable, max_version: int = None) -> List[Dict]:
+        """Fetch the history of the Databricks table using DESCRIBE HISTORY since max_version."""
+        with source_table.adapter.session_factory() as session:
+            query = f"DESCRIBE HISTORY {self.source_schema}.{source_table.table_name}"
+            if max_version is not None:
+                query += f" STARTING VERSION {max_version}"
+            result = session.execute(text(query)).fetchall()
             history_data = [
                 {
                     "version": row["version"],
@@ -96,6 +117,24 @@ class DatabricksToPostgresReplicator:
 
     def _save_history(self, history_table: DBTable, history_data: List[Dict]):
         """Save Databricks history to PostgreSQL history table (SCD Type 0)."""
+        target_tables = self.orchestrator.list_tables(self.target_db, self.target_schema)
+        if history_table.table_name not in target_tables:
+            logger.info(f"History table {history_table.table_name} does not exist. Initializing...")
+            metadata = MetaData()
+            history_schema = {
+                "version": Integer,
+                "timestamp": DateTime,
+                "operation": String,
+                "operation_parameters": String,
+                "num_affected_rows": BigInteger
+            }
+            columns = [Column("version", Integer, primary_key=True)] + [
+                Column(name, col_type) for name, col_type in history_schema.items() if name != "version"
+            ]
+            Table(history_table.table_name, metadata, *columns, schema=self.target_schema)
+            metadata.create_all(history_table.adapter.engine)
+            logger.info(f"Initialized PostgreSQL history table {self.target_schema}.{history_table.table_name}")
+
         history_table.create(history_data)
 
     def _analyze_history(self, history_data: List[Dict]) -> tuple:
@@ -115,7 +154,7 @@ class DatabricksToPostgresReplicator:
             for row in schema_df:
                 field_name = row["col_name"]
                 field_type = row["data_type"]
-                if field_name == "id":
+                if field_name == "unique_id":
                     schema[field_name] = Integer
                 elif field_type in ["string", "varchar"]:
                     schema[field_name] = String
@@ -129,8 +168,8 @@ class DatabricksToPostgresReplicator:
                     schema[field_name] = String  # Fallback
 
         metadata = MetaData()
-        columns = [Column("id", Integer, primary_key=True)] + [
-            Column(name, col_type) for name, col_type in schema.items() if name != "id"
+        columns = [Column("unique_id", Integer, primary_key=True)] + [
+            Column(name, col_type) for name, col_type in schema.items() if name != "unique_id"
         ]
         Table(target_table.table_name, metadata, *columns, schema=self.target_schema)
         metadata.create_all(target_table.adapter.engine)
@@ -144,13 +183,27 @@ class DatabricksToPostgresReplicator:
         self._initialize_table(source_table, target_table)
 
     def _full_load(self, source_table: DBTable, target_table: DBTable):
-        """Perform a full load of all records from Databricks to PostgreSQL."""
+        """Perform a full load of all records from Databricks to PostgreSQL with batching."""
         records = source_table.read({})
-        target_table.create(records)
-        logger.info(f"Inserted {len(records)} records into {self.target_schema}.{target_table.table_name}")
+        total_records = len(records)
+        logger.info(f"Starting full load of {total_records} records into {self.target_schema}.{target_table.table_name}")
+
+        # Batch processing for initial load
+        with target_table.adapter.session_factory() as session:
+            for i in range(0, total_records, self.batch_size):
+                batch = records[i:i + self.batch_size]
+                session.execute(
+                    text(f"INSERT INTO {self.target_schema}.{target_table.table_name} ({', '.join(batch[0].keys())}) "
+                         f"VALUES ({', '.join([':' + k for k in batch[0].keys()])})"),
+                    batch
+                )
+                session.commit()
+                logger.info(f"Inserted batch {i // self.batch_size + 1} of {total_records // self.batch_size + 1} ({len(batch)} records)")
+
+        logger.info(f"Completed full load of {total_records} records into {self.target_schema}.{target_table.table_name}")
 
     def _incremental_merge(self, source_table: DBTable, target_table: DBTable, version_range: tuple):
-        """Perform an incremental merge using Databricks Change Data Feed."""
+        """Perform an incremental merge using Databricks Change Data Feed with batching."""
         start_version, end_version = version_range
         with source_table.adapter.session_factory() as session:
             cdf_query = f"""
@@ -158,18 +211,28 @@ class DatabricksToPostgresReplicator:
             """
             changes = session.execute(text(cdf_query)).fetchall()
             changes = [dict(row) for row in changes]
+
+        total_changes = len(changes)
+        logger.info(f"Starting incremental merge of {total_changes} changes into {self.target_schema}.{target_table.table_name}")
+
+        # Batch processing for CDF merge
         with target_table.adapter.session_factory() as session:
-            for change in changes:
-                if change["_change_type"] in ["insert", "update_postimage"]:
-                    session.execute(
-                        text(f"INSERT INTO {self.target_schema}.{target_table.table_name} ({', '.join(change.keys())}) VALUES ({', '.join([':' + k for k in change.keys()])}) "
-                             f"ON CONFLICT (id) DO UPDATE SET {', '.join([f'{k}=EXCLUDED.{k}' for k in change.keys() if k != 'id'])}"),
-                        change
-                    )
-                elif change["_change_type"] == "delete":
-                    session.execute(
-                        text(f"DELETE FROM {self.target_schema}.{target_table.table_name} WHERE id = :id"),
-                        {"id": change["id"]}
-                    )
-            session.commit()
-        logger.info(f"Merged {len(changes)} changes into {self.target_schema}.{target_table.table_name}")
+            for i in range(0, total_changes, self.cdf_batch_size):
+                batch = changes[i:i + self.cdf_batch_size]
+                for change in batch:
+                    if change["_change_type"] in ["insert", "update_postimage"]:
+                        session.execute(
+                            text(f"INSERT INTO {self.target_schema}.{target_table.table_name} ({', '.join(change.keys())}) "
+                                 f"VALUES ({', '.join([':' + k for k in change.keys()])}) "
+                                 f"ON CONFLICT (unique_id) DO UPDATE SET {', '.join([f'{k}=EXCLUDED.{k}' for k in change.keys() if k != 'unique_id'])}"),
+                            change
+                        )
+                    elif change["_change_type"] == "delete":
+                        session.execute(
+                            text(f"DELETE FROM {self.target_schema}.{target_table.table_name} WHERE unique_id = :unique_id"),
+                            {"unique_id": change["unique_id"]}
+                        )
+                session.commit()
+                logger.info(f"Processed batch {i // self.cdf_batch_size + 1} of {total_changes // self.cdf_batch_size + 1} ({len(batch)} changes)")
+
+        logger.info(f"Completed incremental merge of {total_changes} changes into {self.target_schema}.{target_table.table_name}")
