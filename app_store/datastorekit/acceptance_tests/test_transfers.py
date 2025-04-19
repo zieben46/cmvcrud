@@ -5,6 +5,7 @@ from datastorekit.dsl import SyncDSL
 from datastorekit.drivers import PostgresDriver
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.config import Config
+from datastorekit.models.table_info import TableInfo
 
 def test_replication_with_history():
     """Test replication with history versioning using DSL."""

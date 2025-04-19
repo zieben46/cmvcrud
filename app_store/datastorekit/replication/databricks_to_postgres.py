@@ -1,5 +1,6 @@
 # datastorekit/replication/databricks_to_postgres.py
 import logging
+import os
 from typing import Dict, List
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, Float, DateTime, Boolean, BigInteger
 from sqlalchemy.sql import text
@@ -8,19 +9,27 @@ from sqlalchemy.ext.automap import automap_base
 from databricks.sqlalchemy import TIMESTAMP, TINYINT
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.models.db_table import DBTable
+from datastorekit.models.table_info import TableInfo
 from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 class DatabricksToPostgresReplicator:
-    def __init__(self, orchestrator: DataStoreOrchestrator):
+    def __init__(self, orchestrator: DataStoreOrchestrator, full_load_batch_size: int = None, cdf_batch_size: int = None):
+        """Initialize replicator with configurable batch sizes.
+
+        Args:
+            orchestrator: DataStoreOrchestrator instance.
+            full_load_batch_size: Batch size for full load (default: from env or 500000).
+            cdf_batch_size: Batch size for CDF merge (default: from env or 1000).
+        """
         self.orchestrator = orchestrator
         self.source_db = "databricks_db"
         self.source_schema = "default"
         self.target_db = "spend_plan_db"
         self.target_schema = "safe_user"
-        self.batch_size = 100000  # Batch size for full load
-        self.cdf_batch_size = 1000  # Batch size for CDF merge
+        self.batch_size = int(os.getenv("FULL_LOAD_BATCH_SIZE", 500000)) if full_load_batch_size is None else full_load_batch_size
+        self.cdf_batch_size = int(os.getenv("CDF_BATCH_SIZE", 1000)) if cdf_batch_size is None else cdf_batch_size
 
     def replicate(self, source_table: str, target_table: str, history_table: str, max_changes: int = 20_000_000):
         """Replicate data from a Databricks table to a PostgreSQL table, maintaining history.
@@ -36,9 +45,9 @@ class DatabricksToPostgresReplicator:
         """
         try:
             # Get source and target tables
-            source_table_info = {"table_name": source_table, "scd_type": "type1", "key": "unique_id"}
-            target_table_info = {"table_name": target_table, "scd_type": "type1", "key": "unique_id"}
-            history_table_info = {"table_name": history_table, "scd_type": "type0", "key": "version"}
+            source_table_info = TableInfo(table_name=source_table, columns={}, key="unique_id", scd_type="type1")
+            target_table_info = TableInfo(table_name=target_table, columns={}, key="unique_id", scd_type="type1")
+            history_table_info = TableInfo(table_name=history_table, columns={}, key="version", scd_type="type0")
             source_table = self.orchestrator.get_table(f"{self.source_db}:{self.source_schema}", source_table_info)
             target_table = self.orchestrator.get_table(f"{self.target_db}:{self.target_schema}", target_table_info)
             history_table = self.orchestrator.get_table(f"{self.target_db}:{self.target_schema}", history_table_info)
@@ -172,6 +181,7 @@ class DatabricksToPostgresReplicator:
             Column(name, col_type) for name, col_type in schema.items() if name != "unique_id"
         ]
         Table(target_table.table_name, metadata, *columns, schema=self.target_schema)
+        target_table.table_info.columns = schema  # Update TableInfo columns
         metadata.create_all(target_table.adapter.engine)
         logger.info(f"Initialized PostgreSQL table {self.target_schema}.{target_table.table_name}")
 
@@ -188,16 +198,20 @@ class DatabricksToPostgresReplicator:
         total_records = len(records)
         logger.info(f"Starting full load of {total_records} records into {self.target_schema}.{target_table.table_name}")
 
-        # Batch processing for initial load
-        with target_table.adapter.session_factory() as session:
+        # Batch processing with COPY for initial load
+        with create_engine(target_table.adapter.engine.url).connect() as conn:
             for i in range(0, total_records, self.batch_size):
                 batch = records[i:i + self.batch_size]
-                session.execute(
-                    text(f"INSERT INTO {self.target_schema}.{target_table.table_name} ({', '.join(batch[0].keys())}) "
-                         f"VALUES ({', '.join([':' + k for k in batch[0].keys()])})"),
-                    batch
+                columns = ','.join(batch[0].keys())
+                values = '\n'.join([
+                    '\t'.join([str(record.get(k, '')) for k in batch[0].keys()])
+                    for record in batch
+                ])
+                conn.execute(
+                    text(f"COPY {self.target_schema}.{target_table.table_name} ({columns}) FROM STDIN"),
+                    {"data": values}
                 )
-                session.commit()
+                conn.commit()
                 logger.info(f"Inserted batch {i // self.batch_size + 1} of {total_records // self.batch_size + 1} ({len(batch)} records)")
 
         logger.info(f"Completed full load of {total_records} records into {self.target_schema}.{target_table.table_name}")

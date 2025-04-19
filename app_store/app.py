@@ -4,6 +4,7 @@ import pandas as pd
 import os
 from datastorekit.datastore_orchestrator import DataStoreOrchestrator
 from datastorekit.models.db_table import DBTable
+from datastorekit.models.table_info import TableInfo
 from datastorekit.permissions.manager import PermissionsManager
 from typing import Dict, List, Any
 
@@ -74,7 +75,8 @@ else:
                 table_name = st.selectbox("Table", orchestrator.list_tables(*datastore_key.split(":")), key="admin_table")
                 access_level = st.selectbox("Access Level", ["read", "write"])
                 if st.form_submit_button("Add Access"):
-                    if permissions_manager.add_user_access(target_username, datastore_key, table_name, access_level):
+                    table_info = TableInfo(table_name=table_name, columns={}, key="unique_id", permissions_manager=permissions_manager)
+                    if permissions_manager.add_user_access(target_username, table_info, access_level):
                         st.success(f"Added {access_level} access for {target_username} to {table_name}")
                     else:
                         st.error("Failed to add access")
@@ -96,9 +98,26 @@ else:
             _, datastore_key, selected_table, access_level = selected_access
             source_db, source_schema = datastore_key.split(":")
 
-            # Fetch table
-            table_info = {"table_name": selected_table, "scd_type": "type1"}
+            # Fetch table with TableInfo
+            table_info = TableInfo(
+                table_name=selected_table,
+                columns={
+                    "unique_id": Integer,
+                    "category": String,
+                    "amount": Float,
+                    "start_date": DateTime,
+                    "end_date": DateTime,
+                    "is_active": Boolean
+                },
+                key="unique_id",
+                scd_type="type1",
+                permissions_manager=permissions_manager
+            )
             table = orchestrator.get_table(datastore_key, table_info)
+
+            # Display table columns
+            st.sidebar.subheader("Available Columns")
+            st.sidebar.write(table_info.to_dict()["columns"])
 
             # Tabs for operations
             tabs = st.tabs(["🔍 Read", "✏️ Edit"] if access_level == "write" else ["🔍 Read"])
@@ -110,12 +129,15 @@ else:
                     filter_category = st.text_input("Filter by Category")
                     filters = {"category": filter_category} if filter_category else {}
                 try:
-                    records = table.read(filters)
-                    if records:
-                        df = pd.DataFrame(records)
-                        st.dataframe(df, use_container_width=True)
+                    if table_info.has_access(user["username"], "read"):
+                        records = table.read(filters)
+                        if records:
+                            df = pd.DataFrame(records)
+                            st.dataframe(df, use_container_width=True)
+                        else:
+                            st.info("No records found.")
                     else:
-                        st.info("No records found.")
+                        st.error("No read access to this table.")
                 except Exception as e:
                     st.error(f"Failed to read: {e}")
 
@@ -124,15 +146,18 @@ else:
                 with tabs[1]:
                     st.header("Edit Records")
                     try:
-                        records = table.read({})
-                        df = pd.DataFrame(records)
-                        if not df.empty:
-                            edited_df = st.data_editor(df, num_rows="dynamic")
-                            if st.button("Save Changes"):
-                                table.update(edited_df.to_dict('records'), {})  # Pass all records as list
-                                st.success("Changes saved!")
+                        if table_info.has_access(user["username"], "write"):
+                            records = table.read({})
+                            df = pd.DataFrame(records)
+                            if not df.empty:
+                                edited_df = st.data_editor(df, num_rows="dynamic")
+                                if st.button("Save Changes"):
+                                    table.update(edited_df.to_dict('records'), {})
+                                    st.success("Changes saved!")
+                            else:
+                                st.info("No records to edit.")
                         else:
-                            st.info("No records to edit.")
+                            st.error("No write access to this table.")
                     except Exception as e:
                         st.error(f"Failed to edit: {e}")
     else:

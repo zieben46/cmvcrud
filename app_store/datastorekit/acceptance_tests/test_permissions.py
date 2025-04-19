@@ -5,6 +5,7 @@ from datastorekit.dsl import CrudDSL
 from datastorekit.drivers import PostgresDriver
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.config import Config
+from datastorekit.models.table_info import TableInfo
 from datastorekit.permissions.manager import PermissionsManager
 from datastorekit.permissions.models import Users, UserAccess
 
@@ -52,12 +53,18 @@ def test_access_control():
     dsl = CrudDSL(driver)
     permissions_manager.add_user("testuser", "password123")
     permissions_manager.add_user("admin", "admin123", is_group_admin=True)
-    permissions_manager.add_user_access("testuser", "spend_plan_test_db:safe_user", "spend_plan", "read")
+    table_info = TableInfo(
+        table_name="spend_plan",
+        columns={"unique_id": Integer, "category": String, "amount": Float},
+        key="unique_id",
+        permissions_manager=permissions_manager
+    )
+    permissions_manager.add_user_access("testuser", table_info, "read")
 
     # Test
-    assert permissions_manager.check_access("testuser", "spend_plan_test_db:safe_user", "spend_plan", "read") is True
-    assert permissions_manager.check_access("testuser", "spend_plan_test_db:safe_user", "spend_plan", "write") is False
-    assert permissions_manager.check_access("admin", "spend_plan_test_db:safe_user", "spend_plan", "write") is True
+    assert permissions_manager.check_access("testuser", table_info, "read") is True
+    assert permissions_manager.check_access("testuser", table_info, "write") is False
+    assert permissions_manager.check_access("admin", table_info, "write") is True
 
     # Teardown: Drop users and user_access tables
     engine = create_engine(driver.engine.url)
