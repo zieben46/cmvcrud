@@ -1,0 +1,8 @@
+streamlit
+python-dotenv
+sqlalchemy
+pymongo
+databricks-sqlalchemy
+pandas
+bcrypt
+pytest
