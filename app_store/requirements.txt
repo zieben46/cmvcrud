@@ -1,8 +1,10 @@
-streamlit
-python-dotenv
 sqlalchemy
-pymongo
 databricks-sqlalchemy
+pymongo
+streamlit
 pandas
-bcrypt
-pytest
+pyarrow  # For potential Parquet adapter
+snowflake-sqlalchemy  # Optional for Snowflake
+sqlalchemy-redshift  # Optional for Redshift
+sqlalchemy-bigquery  # Optional for BigQuery
+requests  # Optional for API adapter

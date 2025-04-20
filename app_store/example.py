@@ -2,14 +2,15 @@
 import os
 from datastorekit.datastore_orchestrator import DataStoreOrchestrator
 from datastorekit.models.table_info import TableInfo
-from sqlalchemy import Integer, String, Float
 from typing import List, Dict, Any
 
 # Define paths to .env files
 env_paths = [
     os.path.join(".env", ".env.postgres"),
     os.path.join(".env", ".env.databricks"),
-    os.path.join(".env", ".env.mongodb")
+    os.path.join(".env", ".env.mongodb"),
+    os.path.join(".env", ".env.csv"),
+    os.path.join(".env", ".env.inmemory")
 ]
 
 # Initialize orchestrator
@@ -23,13 +24,19 @@ except Exception as e:
 # Define TableInfo for PostgreSQL spend_plan
 pg_table_info = TableInfo(
     table_name="spend_plan",
+    keys="unique_id",
+    scd_type="type2",
+    datastore_key="spend_plan_db:safe_user",
+    schedule_frequency="hourly",
+    enabled=True,
     columns={
-        "unique_id": Integer,
-        "category": String,
-        "amount": Float
-    },
-    key="unique_id",
-    scd_type="type1"
+        "unique_id": "Integer",
+        "category": "String",
+        "amount": "Float",
+        "start_date": "DateTime",
+        "end_date": "DateTime",
+        "is_active": "Boolean"
+    }
 )
 
 # Get PostgreSQL table

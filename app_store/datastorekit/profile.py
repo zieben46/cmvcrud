@@ -96,3 +96,26 @@ class DatabaseProfile:
             schema="default",
             db_type="sqlite"
         )
+
+    @staticmethod
+    def csv(env_file: str) -> 'DatabaseProfile':
+        env_vars = dotenv_values(env_file)
+        base_dir = env_vars.get("CSV_BASE_DIR", "./data")
+        dbname = env_vars.get("CSV_DBNAME", "csv_db")
+        return DatabaseProfile(
+            connection_string=base_dir,
+            dbname=dbname,
+            schema="default",
+            db_type="csv"
+        )
+
+    @staticmethod
+    def inmemory(env_file: str) -> 'DatabaseProfile':
+        env_vars = dotenv_values(env_file)
+        dbname = env_vars.get("INMEMORY_DBNAME", "inmemory_db")
+        return DatabaseProfile(
+            connection_string="inmemory://",
+            dbname=dbname,
+            schema="default",
+            db_type="inmemory"
+        )

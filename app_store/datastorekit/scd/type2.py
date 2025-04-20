@@ -12,7 +12,10 @@ class Type2Handler(SCDHandler):
         self.adapter.insert(self.table_name, data)
 
     def read(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return self.adapter.select(self.table_name, filters)
+        read_filters = filters.copy()
+        if "is_active" not in read_filters:
+            read_filters["is_active"] = True
+        return self.adapter.select(self.table_name, read_filters)
 
     def update(self, data: List[Dict[str, Any]], filters: Dict[str, Any]):
         for update_data in data:

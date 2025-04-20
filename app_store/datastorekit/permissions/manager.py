@@ -12,25 +12,21 @@ logger = logging.getLogger(__name__)
 
 class PermissionsManager:
     def __init__(self, orchestrator: DataStoreOrchestrator, datastore_key: str):
-        """Initialize PermissionsManager for a specific datastore.
-
-        Args:
-            orchestrator: DataStoreOrchestrator instance.
-            datastore_key: Datastore key (e.g., 'spend_plan_db:safe_user').
-        """
+        """Initialize PermissionsManager for a specific datastore."""
         self.orchestrator = orchestrator
         self.datastore_key = datastore_key
         self.adapter = orchestrator.adapters[datastore_key]
         self._initialize_tables()
 
     def _initialize_tables(self):
-        """Create Users and UserAccess tables if they don't exist."""
+        """Create Users, UserAccess, and TableInfo tables if they don't exist."""
         try:
             metadata = MetaData()
             Users.__table__.schema = self.adapter.profile.schema if self.adapter.profile.db_type != "sqlite" else None
             UserAccess.__table__.schema = self.adapter.profile.schema if self.adapter.profile.db_type != "sqlite" else None
-            metadata.create_all(self.adapter.engine, tables=[Users.__table__, UserAccess.__table__])
-            logger.info(f"Initialized Users and UserAccess tables in {self.datastore_key}")
+            TableInfo.__table__.schema = self.adapter.profile.schema if self.adapter.profile.db_type != "sqlite" else None
+            metadata.create_all(self.adapter.engine, tables=[Users.__table__, UserAccess.__table__, TableInfo.__table__])
+            logger.info(f"Initialized Users, UserAccess, and TableInfo tables in {self.datastore_key}")
         except Exception as e:
             logger.error(f"Failed to initialize tables: {e}")
             raise

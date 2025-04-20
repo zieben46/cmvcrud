@@ -2,17 +2,22 @@
 import streamlit as st
 import pandas as pd
 import os
+import json
+from sqlalchemy.orm import Session
 from datastorekit.datastore_orchestrator import DataStoreOrchestrator
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
 from datastorekit.permissions.manager import PermissionsManager
 from typing import Dict, List, Any
+from sqlalchemy import Integer, String, Float, DateTime, Boolean
 
 # Define paths to .env files
 env_paths = [
     os.path.join(".env", ".env.postgres"),
     os.path.join(".env", ".env.databricks"),
-    os.path.join(".env", ".env.mongodb")
+    os.path.join(".env", ".env.mongodb"),
+    os.path.join(".env", ".env.csv"),
+    os.path.join(".env", ".env.inmemory")
 ]
 
 # Initialize orchestrator
@@ -56,7 +61,7 @@ else:
         st.session_state.user = None
         st.experimental_rerun()
 
-    # Group admin: Manage users
+    # Group admin: Manage users and TableInfo
     if user["is_group_admin"]:
         with st.sidebar.expander("Admin: Manage Users"):
             with st.form("add_user_form"):
@@ -71,15 +76,56 @@ else:
 
             with st.form("add_access_form"):
                 target_username = st.text_input("Target Username")
-                datastore_key = st.selectbox("Datastore", orchestrator.list_adapters(), key="admin_datastore")
-                table_name = st.selectbox("Table", orchestrator.list_tables(*datastore_key.split(":")), key="admin_table")
+                table_name = st.text_input("Table Name")
                 access_level = st.selectbox("Access Level", ["read", "write"])
                 if st.form_submit_button("Add Access"):
-                    table_info = TableInfo(table_name=table_name, columns={}, key="unique_id", permissions_manager=permissions_manager)
+                    table_info = TableInfo(
+                        table_name=table_name,
+                        keys="unique_id",
+                        scd_type="type1",
+                        datastore_key="spend_plan_db:safe_user",
+                        columns={"unique_id": "Integer", "category": "String", "amount": "Float"},
+                        permissions_manager=permissions_manager
+                    )
                     if permissions_manager.add_user_access(target_username, table_info, access_level):
                         st.success(f"Added {access_level} access for {target_username} to {table_name}")
                     else:
                         st.error("Failed to add access")
+
+        with st.sidebar.expander("Admin: Manage Tables"):
+            with st.form("add_table_info_form"):
+                table_name = st.text_input("Table Name")
+                keys = st.text_input("Keys (comma-separated)", "unique_id")
+                scd_type = st.selectbox("SCD Type", ["type0", "type1", "type2"])
+                schedule_frequency = st.selectbox("Schedule Frequency", ["hourly", "daily", "weekly"])
+                enabled = st.checkbox("Enabled", value=True)
+                columns = st.text_area("Columns (JSON, optional)", '{"unique_id": "Integer", "category": "String", "amount": "Float"}')
+                if st.form_submit_button("Add Table"):
+                    try:
+                        columns_dict = json.loads(columns) if columns.strip() else None
+                        with orchestrator.adapters["spend_plan_db:safe_user"].session_factory() as session:
+                            table_info = TableInfo(
+                                table_name=table_name,
+                                keys=keys,
+                                scd_type=scd_type,
+                                datastore_key="spend_plan_db:safe_user",
+                                schedule_frequency=schedule_frequency,
+                                enabled=enabled,
+                                columns=columns_dict
+                            )
+                            session.add(table_info)
+                            session.commit()
+                            st.success(f"Added table: {table_name}")
+                    except Exception as e:
+                        st.error(f"Failed to add table: {e}")
+
+            # Display TableInfo records
+            with orchestrator.adapters["spend_plan_db:safe_user"].session_factory() as session:
+                table_infos = session.query(TableInfo).all()
+                if table_infos:
+                    df = pd.DataFrame([ti.to_dict() for ti in table_infos])
+                    st.subheader("Registered Tables")
+                    st.dataframe(df, use_container_width=True)
 
     # Sidebar for datastore and table selection
     st.sidebar.header("Datastore Selection")
@@ -101,23 +147,13 @@ else:
             # Fetch table with TableInfo
             table_info = TableInfo(
                 table_name=selected_table,
-                columns={
-                    "unique_id": Integer,
-                    "category": String,
-                    "amount": Float,
-                    "start_date": DateTime,
-                    "end_date": DateTime,
-                    "is_active": Boolean
-                },
-                key="unique_id",
+                keys="unique_id",
                 scd_type="type1",
+                datastore_key=datastore_key,
+                columns={"unique_id": "Integer", "category": "String", "amount": "Float"},
                 permissions_manager=permissions_manager
             )
             table = orchestrator.get_table(datastore_key, table_info)
-
-            # Display table columns
-            st.sidebar.subheader("Available Columns")
-            st.sidebar.write(table_info.to_dict()["columns"])
 
             # Tabs for operations
             tabs = st.tabs(["🔍 Read", "✏️ Edit"] if access_level == "write" else ["🔍 Read"])

@@ -1,38 +1,12 @@
-# datastorekit/drivers.py
-from abc import ABC, abstractmethod
+# datastorekit/acceptance_tests/drivers/postgres_driver.py
 from typing import Dict, Any, List
 from sqlalchemy import create_engine, Table, MetaData, Column
-from datastorekit.datastore_orchestrator import DataStoreOrchestrator
-from datastorekit.models.db_table import DBTable
+from ..drivers.database_driver import DatabaseDriver
+from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.replication.databricks_to_postgres import DatabricksToPostgresReplicator
 import logging
 
 logger = logging.getLogger(__name__)
-
-class DatabaseDriver(ABC):
-    @abstractmethod
-    def create_table(self, table_name: str, schema: Dict[str, Any]):
-        pass
-
-    @abstractmethod
-    def create(self, table_info: Dict[str, str], data: List[Dict[str, Any]]):
-        pass
-
-    @abstractmethod
-    def read(self, table_info: Dict[str, str], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        pass
-
-    @abstractmethod
-    def update(self, table_info: Dict[str, str], data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        pass
-
-    @abstractmethod
-    def delete(self, table_info: Dict[str, str], filters: Dict[str, Any]):
-        pass
-
-    @abstractmethod
-    def sync_to(self, source_table_info: Dict[str, str], target_driver: 'DatabaseDriver', target_table: str, method: str):
-        pass
 
 class PostgresDriver(DatabaseDriver):
     def __init__(self, orchestrator: DataStoreOrchestrator, datastore_key: str):

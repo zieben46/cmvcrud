@@ -1,8 +1,8 @@
 # datastorekit/acceptance_tests/test_crud.py
 import os
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, Float
-from datastorekit.dsl import CrudDSL
-from datastorekit.drivers import PostgresDriver
+from .dsl.crud_dsl import CrudDSL
+from .drivers.postgres_driver import PostgresDriver
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.config import Config
 from datastorekit.models.table_info import TableInfo
@@ -21,7 +21,13 @@ def test_crud_operations():
         "category": String,
         "amount": Float
     }
-    table_info = TableInfo(table_name="spend_plan_test", columns=schema, key="unique_id")
+    table_info = TableInfo(
+        table_name="spend_plan_test",
+        keys="unique_id",
+        scd_type="type1",
+        datastore_key="spend_plan_test_db:safe_user",
+        columns=schema
+    )
     dsl = CrudDSL(driver)
     dsl.create_table("spend_plan_test", schema, key="unique_id") \
        .setup_data([

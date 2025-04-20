@@ -1,11 +1,12 @@
 # datastorekit/acceptance_tests/test_transfers.py
 import os
 from sqlalchemy import create_engine, Table, MetaData, Column, Integer, String, Float, DateTime, Boolean, BigInteger
-from datastorekit.dsl import SyncDSL
-from datastorekit.drivers import PostgresDriver
+from .dsl.sync_dsl import SyncDSL
+from .drivers.postgres_driver import PostgresDriver
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.config import Config
 from datastorekit.models.table_info import TableInfo
+from datetime import datetime
 
 def test_replication_with_history():
     """Test replication with history versioning using DSL."""
@@ -41,7 +42,7 @@ def test_replication_with_history():
     dsl.create_table("spend_plan_copy_test", schema, key="unique_id")
     dsl.create_table("spend_plan_history_test", history_schema, key="version") \
        .setup_data([
-           {"version": 1, "timestamp": DateTime.now(), "operation": "INSERT", "operation_parameters": "{}", "num_affected_rows": 2}
+           {"version": 1, "timestamp": datetime.now(), "operation": "INSERT", "operation_parameters": "{}", "num_affected_rows": 2}
        ])
 
     # Test replication (should use history since version 1)

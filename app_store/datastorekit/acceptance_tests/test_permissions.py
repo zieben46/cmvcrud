@@ -1,8 +1,8 @@
 # datastorekit/acceptance_tests/test_permissions.py
 import os
-from sqlalchemy import create_engine
-from datastorekit.dsl import CrudDSL
-from datastorekit.drivers import PostgresDriver
+from sqlalchemy import create_engine, MetaData
+from .dsl.crud_dsl import CrudDSL
+from .drivers.postgres_driver import PostgresDriver
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.config import Config
 from datastorekit.models.table_info import TableInfo
@@ -55,8 +55,10 @@ def test_access_control():
     permissions_manager.add_user("admin", "admin123", is_group_admin=True)
     table_info = TableInfo(
         table_name="spend_plan",
-        columns={"unique_id": Integer, "category": String, "amount": Float},
-        key="unique_id",
+        keys="unique_id",
+        scd_type="type1",
+        datastore_key="spend_plan_test_db:safe_user",
+        columns={"unique_id": "Integer", "category": "String", "amount": "Float"},
         permissions_manager=permissions_manager
     )
     permissions_manager.add_user_access("testuser", table_info, "read")
