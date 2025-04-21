@@ -1,10 +1,10 @@
 # datastorekit/adapters/sqlalchemy_core_adapter.py
 from sqlalchemy import create_engine, Table, MetaData, select, insert, update, delete
-from sqlalchemy.sql import and_
+from sqlalchemy.sql import and_, text
 from sqlalchemy.exc import OperationalError
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.engine import DBEngine
-from typing import List, Dict, Any, Iterator
+from typing import List, Dict, Any, Iterator, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
         self.profile = profile
         self.db_engine = DBEngine(profile)
-        self.engine = self.db_engine.engine
+        self.engine = self.db_engine.get_engine()
         self.session_factory = self.db_engine.Session
         self.metadata = MetaData()
 
@@ -33,7 +33,7 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
                 return  # Use table_info.keys for Databricks
             raise ValueError(f"Failed to validate keys for table {table_name}: {e}")
 
-    def insert(self, table_name: str, data: List[Dict[str, Any]]):
+    def insert(self, table проявлен_name: str, data: List[Dict[str, Any]]):
         self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
         table = Table(table_name, self.metadata, autoload_with=self.engine)
         with self.engine.connect() as conn:
@@ -88,3 +88,15 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
         with self.engine.connect() as conn:
             conn.execute(query)
             conn.commit()
+
+    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Execute a raw SQL query and return results."""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(sql), parameters or {})
+                if result.returns_rows:
+                    return [dict(row._mapping) for row in result.fetchall()]
+                return []
+        except Exception as e:
+            logger.error(f"Failed to execute SQL: {sql}, error: {e}")
+            raise

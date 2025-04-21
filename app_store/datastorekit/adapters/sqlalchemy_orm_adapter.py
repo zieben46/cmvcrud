@@ -2,16 +2,20 @@
 from sqlalchemy import create_engine, Table, MetaData, select
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.automap import automap_base
+from sqlalchemy.sql import text
 from databricks.sqlalchemy import TIMESTAMP, TINYINT
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.engine import DBEngine
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Iterator, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SQLAlchemyORMAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
         self.profile = profile
         self.db_engine = DBEngine(profile)
-        self.engine = self.db_engine.engine
+        self.engine = self.db_engine.get_engine()
         self.session_factory = self.db_engine.Session
         self.metadata = MetaData()
         self.base = automap_base()
@@ -30,9 +34,8 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
                     f"Table {table_name} primary keys {db_keys} do not match TableInfo keys {table_info_keys}"
                 )
         except KeyError as e:
-            # Databricks workaround: Use table_info.keys if ORM mapping fails
             if self.profile.db_type == "databricks":
-                return
+                return  # Use table_info.keys for Databricks
             raise ValueError(f"Table {table_name} not found or key error: {e}")
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
@@ -42,7 +45,6 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
             SampleObject = self.base.classes[table_name]
         except KeyError as e:
             if self.profile.db_type == "databricks":
-                # Workaround: Use TableInfo.keys for Databricks
                 raise ValueError(f"Table {table_name} not found for Databricks, ensure TableInfo.keys are correct: {e}")
             raise ValueError(f"Table {table_name} not found in the database schema: {e}")
         with self.session_factory() as session:
@@ -66,6 +68,23 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
                 query = query.where(getattr(SampleObject, key) == value)
             records = session.execute(query).scalars().all()
             return [{key: getattr(record, key) for key in record.__dict__.keys() if not key.startswith('_')} for record in records]
+
+    def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
+        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.base.prepare(autoload_with=self.engine)
+        try:
+            SampleObject = self.base.classes[table_name]
+        except KeyError as e:
+            if self.profile.db_type == "databricks":
+                raise ValueError(f"Table {table_name} not found for Databricks: {e}")
+            raise ValueError(f"Table {table_name} not found in the database schema: {e}")
+        with self.session_factory() as session:
+            query = select(SampleObject)
+            for key, value in filters.items():
+                query = query.where(getattr(SampleObject, key) == value)
+            result = session.execution_options(yield_per=chunk_size).execute(query)
+            for partition in result.partitions():
+                yield [{key: getattr(record, key) for key in record.__dict__.keys() if not key.startswith('_')} for record in partition]
 
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
         self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
@@ -104,3 +123,16 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
             for record in records:
                 session.delete(record)
             session.commit()
+
+    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Execute a raw SQL query and return results."""
+        try:
+            with self.session_factory() as session:
+                result = session.execute(text(sql), parameters or {})
+                if result.returns_rows:
+                    return [dict(row._mapping) for row in result.fetchall()]
+                session.commit()
+                return []
+        except Exception as e:
+            logger.error(f"Failed to execute SQL: {sql}, error: {e}")
+            raise

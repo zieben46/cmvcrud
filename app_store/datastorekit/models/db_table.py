@@ -1,5 +1,5 @@
 # datastorekit/models/db_table.py
-from typing import Dict, Any, List, Iterator
+from typing import Dict, Any, List, Iterator, Optional
 from datastorekit.scd.type0 import Type0Handler
 from datastorekit.scd.type1 import Type1Handler
 from datastorekit.scd.type2 import Type2Handler
@@ -39,3 +39,7 @@ class DBTable:
 
     def delete(self, filters: Dict[str, Any]):
         self.scd_handler.delete(filters)
+
+    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Execute a raw SQL query on the table."""
+        return self.adapter.execute_sql(sql, parameters)

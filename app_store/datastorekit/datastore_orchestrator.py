@@ -7,9 +7,11 @@ from datastorekit.adapters.sqlalchemy_core_adapter import SQLAlchemyCoreAdapter
 from datastorekit.adapters.csv_adapter import CSVAdapter
 from datastorekit.adapters.in_memory_adapter import InMemoryAdapter
 from datastorekit.adapters.mongodb_adapter import MongoDBAdapter
+from datastorekit.adapters.spark_adapter import SparkAdapter
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
 from datastorekit.profile import DatabaseProfile
+import os
 
 class DataStoreOrchestrator:
     def __init__(self, env_paths: List[str] = None, profiles: List[DatabaseProfile] = None):
@@ -31,6 +33,8 @@ class DataStoreOrchestrator:
             return DatabaseProfile.postgres(env_path)
         elif "databricks" in env_path.lower():
             return DatabaseProfile.databricks(env_path)
+        elif "spark" in env_path.lower():
+            return DatabaseProfile.spark(env_path)
         elif "mongodb" in env_path.lower():
             return DatabaseProfile.mongodb(env_path)
         elif "csv" in env_path.lower():
@@ -55,14 +59,12 @@ class DataStoreOrchestrator:
             return InMemoryAdapter(profile)
         elif profile.db_type == "mongodb":
             return MongoDBAdapter(profile)
+        elif profile.db_type == "spark":
+            return SparkAdapter(profile)
         elif profile.db_type in ["postgres", "sqlite"]:
             return SQLAlchemyORMAdapter(profile)
         elif profile.db_type == "databricks":
-            try:
-                return SQLAlchemyORMAdapter(profile)
-            except Exception as e:
-                print(f"Failed to create SQLAlchemyORMAdapter for Databricks: {e}, falling back to SQLAlchemyCoreAdapter")
-                return SQLAlchemyCoreAdapter(profile)
+            return SQLAlchemyCoreAdapter(profile)
         else:
             raise ValueError(f"Unsupported db_type: {profile.db_type}")
 
@@ -93,6 +95,8 @@ class DataStoreOrchestrator:
             return adapter.db.list_collection_names()
         elif isinstance(adapter, CSVAdapter):
             return [f.replace(".csv", "") for f in os.listdir(adapter.base_dir) if f.endswith(".csv")]
+        elif isinstance(adapter, SparkAdapter):
+            return [table.tableName for table in adapter.spark.catalog.listTables(adapter.schema)]
         elif isinstance(adapter, InMemoryAdapter):
             return list(adapter.data.keys())
         return []
@@ -203,6 +207,8 @@ class DataStoreOrchestrator:
                 print(f"MongoDB collection {target_table.table_name} will be created on first insert")
             elif isinstance(target_adapter, CSVAdapter):
                 print(f"CSV file for {target_table.table_name} will be created on first insert")
+            elif isinstance(target_adapter, SparkAdapter):
+                print(f"Delta table {target_table.table_name} will be created on first insert")
             elif isinstance(target_adapter, InMemoryAdapter):
                 print(f"In-memory table {target_table.table_name} initialized")
             else:

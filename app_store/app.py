@@ -1,200 +1,171 @@
 # app.py
 import streamlit as st
-import pandas as pd
-import os
 import json
-from sqlalchemy.orm import Session
+import pandas as pd
 from datastorekit.datastore_orchestrator import DataStoreOrchestrator
-from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
-from datastorekit.permissions.manager import PermissionsManager
-from typing import Dict, List, Any
-from sqlalchemy import Integer, String, Float, DateTime, Boolean
+import logging
+import os
 
-# Define paths to .env files
-env_paths = [
-    os.path.join(".env", ".env.postgres"),
-    os.path.join(".env", ".env.databricks"),
-    os.path.join(".env", ".env.mongodb"),
-    os.path.join(".env", ".env.csv"),
-    os.path.join(".env", ".env.inmemory")
-]
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("app.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Streamlit app title
+st.title("DatastoreKit Explorer")
 
 # Initialize orchestrator
 try:
+    env_paths = [
+        os.path.join(".env", ".env.databricks"),
+        os.path.join(".env", ".env.postgres"),
+        os.path.join(".env", ".env.spark"),
+        os.path.join(".env", ".env.csv"),
+        os.path.join(".env", ".env.mongodb"),
+        os.path.join(".env", ".env.inmemory")
+    ]
+    # Filter out non-existent .env files
+    env_paths = [path for path in env_paths if os.path.exists(path)]
+    if not env_paths:
+        st.error("No valid .env files found. Please configure datastores.")
+        st.stop()
     orchestrator = DataStoreOrchestrator(env_paths)
+    st.success("Initialized orchestrator with adapters: " + ", ".join(orchestrator.list_adapters()))
 except Exception as e:
-    st.error(f"Failed to initialize datastores: {e}")
+    st.error(f"Failed to initialize orchestrator: {e}")
     st.stop()
 
-# Initialize permissions manager
-permissions_manager = PermissionsManager(orchestrator, "spend_plan_db:safe_user")
+# Select adapter
+adapter_key = st.selectbox("Select Datastore", orchestrator.list_adapters())
 
-# Streamlit app configuration
-st.set_page_config(page_title="DataStoreKit Dashboard", layout="wide")
+# Select table
+try:
+    db_name, schema = adapter_key.split(":")
+    tables = orchestrator.list_tables(db_name, schema)
+    if not tables:
+        st.warning(f"No tables found in {adapter_key}")
+        st.stop()
+    table_name = st.selectbox("Select Table", tables)
+except Exception as e:
+    st.error(f"Failed to list tables: {e}")
+    st.stop()
 
-# Session state for user authentication
-if "user" not in st.session_state:
-    st.session_state.user = None
+# Define TableInfo
+table_info = TableInfo(
+    table_name=table_name,
+    keys="unique_id,secondary_key",
+    scd_type="type2",
+    datastore_key=adapter_key,
+    columns={
+        "unique_id": "Integer",
+        "secondary_key": "String",
+        "category": "String",
+        "amount": "Float",
+        "start_date": "DateTime",
+        "end_date": "DateTime",
+        "is_active": "Boolean"
+    }
+)
 
-# Login UI
-if not st.session_state.user:
-    st.title("🔐 Login to DataStoreKit Dashboard")
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.form_submit_button("Login"):
-            user = permissions_manager.authenticate_user(username, password)
-            if user:
-                st.session_state.user = user
-                st.success(f"Welcome, {username}!")
-                st.experimental_rerun()
+# Get table
+try:
+    table = orchestrator.get_table(adapter_key, table_info)
+    st.success(f"Connected to table: {table_name}")
+except Exception as e:
+    st.error(f"Failed to connect to table: {e}")
+    st.stop()
+
+# Tabs for different operations
+tab1, tab2, tab3 = st.tabs(["Execute SQL Query", "Read Records", "Table Info"])
+
+with tab1:
+    st.subheader("Execute SQL Query")
+    default_query = (
+        f"SELECT category, COUNT(*) as record_count, SUM(amount) as total_amount "
+        f"FROM {db_name}.{schema}.{table_name} WHERE is_active = TRUE GROUP BY category"
+    )
+    sql_query = st.text_area("Enter SQL Query", default_query, height=150)
+    params = st.text_input("Parameters (JSON, e.g., {\"is_active\": true})", "")
+    if st.button("Execute Query"):
+        try:
+            parameters = json.loads(params) if params else None
+            logger.info("Executing query", extra={"query": sql_query, "parameters": parameters, "table": table_name})
+            results = table.execute_sql(sql_query, parameters)
+            if results:
+                st.write("Query Results:")
+                df = pd.DataFrame(results)
+                st.dataframe(df)
+                st.json(results)
+                # Add download button
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Download Results as CSV",
+                    data=csv,
+                    file_name=f"{table_name}_results.csv",
+                    mime="text/csv"
+                )
             else:
-                st.error("Invalid username or password")
-else:
-    user = st.session_state.user
-    st.title(f"🌟 DataStoreKit Dashboard - Welcome, {user['username']}")
-    st.markdown("Manage and replicate data across datastores with ease!")
+                st.info("Query executed successfully, but no results returned.")
+        except NotImplementedError:
+            st.error("SQL execution is not supported for this adapter.")
+        except Exception as e:
+            st.error(f"Query failed: {e}")
+            logger.error(f"Query failed: {e}", extra={"query": sql_query, "parameters": parameters})
 
-    # Logout button
-    if st.sidebar.button("Logout"):
-        st.session_state.user = None
-        st.experimental_rerun()
+with tab2:
+    st.subheader("Read Records")
+    filters = st.text_input("Filters (JSON, e.g., {\"category\": \"Food\"})", "")
+    chunk_size = st.number_input("Chunk Size (for large datasets)", min_value=100, value=100000, step=100)
+    if st.button("Read Records"):
+        try:
+            filters_dict = json.loads(filters) if filters else {}
+            logger.info("Reading records", extra={"filters": filters_dict, "table": table_name, "chunk_size": chunk_size})
+            results = []
+            for chunk in table.read_chunks(filters_dict, chunk_size=chunk_size):
+                results.extend(chunk)
+                st.write(f"Read chunk of {len(chunk)} records")
+            if results:
+                st.write("Records:")
+                df = pd.DataFrame(results)
+                st.dataframe(df)
+                st.json(results)
+                # Add download button for records
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Download Records as CSV",
+                    data=csv,
+                    file_name=f"{table_name}_records.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("No records found.")
+        except Exception as e:
+            st.error(f"Read failed: {e}")
+            logger.error(f"Read failed: {e}", extra={"filters": filters_dict})
 
-    # Group admin: Manage users and TableInfo
-    if user["is_group_admin"]:
-        with st.sidebar.expander("Admin: Manage Users"):
-            with st.form("add_user_form"):
-                new_username = st.text_input("New Username")
-                new_password = st.text_input("New Password", type="password")
-                is_group_admin = st.checkbox("Group Admin")
-                if st.form_submit_button("Add User"):
-                    if permissions_manager.add_user(new_username, new_password, is_group_admin):
-                        st.success(f"Added user: {new_username}")
-                    else:
-                        st.error("Failed to add user")
+with tab3:
+    st.subheader("Table Information")
+    st.write("Table Name:", table_name)
+    st.write("Keys:", ", ".join(table.keys))
+    st.write("SCD Type:", table.scd_type)
+    st.write("Columns:", table_info.columns)
+    if st.button("List All Tables"):
+        st.write("Tables in Datastore:", tables)
 
-            with st.form("add_access_form"):
-                target_username = st.text_input("Target Username")
-                table_name = st.text_input("Table Name")
-                access_level = st.selectbox("Access Level", ["read", "write"])
-                if st.form_submit_button("Add Access"):
-                    table_info = TableInfo(
-                        table_name=table_name,
-                        keys="unique_id",
-                        scd_type="type1",
-                        datastore_key="spend_plan_db:safe_user",
-                        columns={"unique_id": "Integer", "category": "String", "amount": "Float"},
-                        permissions_manager=permissions_manager
-                    )
-                    if permissions_manager.add_user_access(target_username, table_info, access_level):
-                        st.success(f"Added {access_level} access for {target_username} to {table_name}")
-                    else:
-                        st.error("Failed to add access")
-
-        with st.sidebar.expander("Admin: Manage Tables"):
-            with st.form("add_table_info_form"):
-                table_name = st.text_input("Table Name")
-                keys = st.text_input("Keys (comma-separated)", "unique_id")
-                scd_type = st.selectbox("SCD Type", ["type0", "type1", "type2"])
-                schedule_frequency = st.selectbox("Schedule Frequency", ["hourly", "daily", "weekly"])
-                enabled = st.checkbox("Enabled", value=True)
-                columns = st.text_area("Columns (JSON, optional)", '{"unique_id": "Integer", "category": "String", "amount": "Float"}')
-                if st.form_submit_button("Add Table"):
-                    try:
-                        columns_dict = json.loads(columns) if columns.strip() else None
-                        with orchestrator.adapters["spend_plan_db:safe_user"].session_factory() as session:
-                            table_info = TableInfo(
-                                table_name=table_name,
-                                keys=keys,
-                                scd_type=scd_type,
-                                datastore_key="spend_plan_db:safe_user",
-                                schedule_frequency=schedule_frequency,
-                                enabled=enabled,
-                                columns=columns_dict
-                            )
-                            session.add(table_info)
-                            session.commit()
-                            st.success(f"Added table: {table_name}")
-                    except Exception as e:
-                        st.error(f"Failed to add table: {e}")
-
-            # Display TableInfo records
-            with orchestrator.adapters["spend_plan_db:safe_user"].session_factory() as session:
-                table_infos = session.query(TableInfo).all()
-                if table_infos:
-                    df = pd.DataFrame([ti.to_dict() for ti in table_infos])
-                    st.subheader("Registered Tables")
-                    st.dataframe(df, use_container_width=True)
-
-    # Sidebar for datastore and table selection
-    st.sidebar.header("Datastore Selection")
-    user_access = permissions_manager.get_user_access(user["username"])
-    accessible_tables = [(access["datastore_key"], access["table_name"], access["access_level"]) for access in user_access]
-    if user["is_group_admin"]:
-        accessible_tables = [(key, table, "write") for key in orchestrator.list_adapters() for table in orchestrator.list_tables(*key.split(":"))]
-    
-    if accessible_tables:
-        selected_access = st.sidebar.selectbox(
-            "Select Table",
-            [(f"{key}:{table} ({access})", key, table, access) for key, table, access in accessible_tables],
-            format_func=lambda x: x[0]
-        )
-        if selected_access:
-            _, datastore_key, selected_table, access_level = selected_access
-            source_db, source_schema = datastore_key.split(":")
-
-            # Fetch table with TableInfo
-            table_info = TableInfo(
-                table_name=selected_table,
-                keys="unique_id",
-                scd_type="type1",
-                datastore_key=datastore_key,
-                columns={"unique_id": "Integer", "category": "String", "amount": "Float"},
-                permissions_manager=permissions_manager
-            )
-            table = orchestrator.get_table(datastore_key, table_info)
-
-            # Tabs for operations
-            tabs = st.tabs(["🔍 Read", "✏️ Edit"] if access_level == "write" else ["🔍 Read"])
-
-            # Read Tab
-            with tabs[0]:
-                st.header("Read Records")
-                with st.expander("Filter Options"):
-                    filter_category = st.text_input("Filter by Category")
-                    filters = {"category": filter_category} if filter_category else {}
-                try:
-                    if table_info.has_access(user["username"], "read"):
-                        records = table.read(filters)
-                        if records:
-                            df = pd.DataFrame(records)
-                            st.dataframe(df, use_container_width=True)
-                        else:
-                            st.info("No records found.")
-                    else:
-                        st.error("No read access to this table.")
-                except Exception as e:
-                    st.error(f"Failed to read: {e}")
-
-            # Edit Tab (write access only)
-            if access_level == "write":
-                with tabs[1]:
-                    st.header("Edit Records")
-                    try:
-                        if table_info.has_access(user["username"], "write"):
-                            records = table.read({})
-                            df = pd.DataFrame(records)
-                            if not df.empty:
-                                edited_df = st.data_editor(df, num_rows="dynamic")
-                                if st.button("Save Changes"):
-                                    table.update(edited_df.to_dict('records'), {})
-                                    st.success("Changes saved!")
-                            else:
-                                st.info("No records to edit.")
-                        else:
-                            st.error("No write access to this table.")
-                    except Exception as e:
-                        st.error(f"Failed to edit: {e}")
-    else:
-        st.info("No accessible tables. Contact a group admin to grant access.")
+# Sidebar for additional actions
+with st.sidebar:
+    st.header("Additional Actions")
+    if st.button("Clear Cache"):
+        try:
+            table.cache()  # Assuming cache method exists
+            st.success("Cache cleared.")
+        except Exception as e:
+            st.error(f"Failed to clear cache: {e}")
+    st.write("DatastoreKit Version: 1.0.0")  # Update with actual version

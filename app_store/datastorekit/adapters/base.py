@@ -12,6 +12,11 @@ class DatastoreAdapter(ABC):
         pass
 
     @abstractmethod
+    def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
+        """Select records in chunks for large datasets."""
+        pass
+
+    @abstractmethod
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
         pass
 
@@ -24,6 +29,6 @@ class DatastoreAdapter(ABC):
         pass
 
     @abstractmethod
-    def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        """Select records in chunks for large datasets."""
+    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Execute a raw SQL query and return results."""
         pass

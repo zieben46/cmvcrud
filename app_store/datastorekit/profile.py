@@ -66,6 +66,27 @@ class DatabaseProfile:
         )
 
     @staticmethod
+    def spark(env_file: str) -> 'DatabaseProfile':
+        env_vars = dotenv_values(env_file)
+        host = env_vars.get("DATABRICKS_HOST")
+        token = env_vars.get("DATABRICKS_TOKEN")
+        http_path = env_vars.get("DATABRICKS_HTTP_PATH")
+        catalog = env_vars.get("DATABRICKS_CATALOG", "hive_metastore")
+        schema = env_vars.get("DATABRICKS_SCHEMA", "default")
+        if not all([host, token, http_path]):
+            raise ValueError(f"DATABRICKS_HOST, DATABRICKS_TOKEN, and DATABRICKS_HTTP_PATH must be provided in {env_file}")
+        conn_str = f"databricks://token:{token}@{host}?http_path={http_path}&catalog={catalog}&schema={schema}"
+        return DatabaseProfile(
+            connection_string=conn_str,
+            host=host,
+            token=token,
+            http_path=http_path,
+            catalog=catalog,
+            schema=schema,
+            db_type="spark"
+        )
+
+    @staticmethod
     def mongodb(env_file: str) -> 'DatabaseProfile':
         env_vars = dotenv_values(env_file)
         host = env_vars.get("MONGO_HOST", "localhost")
