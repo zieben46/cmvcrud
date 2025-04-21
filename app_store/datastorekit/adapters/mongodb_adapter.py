@@ -1,4 +1,3 @@
-# datastorekit/adapters/mongodb_adapter.py
 from pymongo import MongoClient
 from typing import Dict, Any, List, Iterator, Optional
 from bson import json_util
@@ -10,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 class MongoDBAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
+        super().__init__(profile)
         client = MongoClient(profile.connection_string)
         self.db = client[profile.dbname]
 
@@ -25,15 +25,18 @@ class MongoDBAdapter(DatastoreAdapter):
                 )
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         collection = self.db[table_name]
         collection.insert_many(data)
 
     def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         collection = self.db[table_name]
         records = collection.find(filters)
         return [json.loads(json_util.dumps(record)) for record in records]
 
     def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         collection = self.db[table_name]
         cursor = collection.find(filters).batch_size(chunk_size)
         chunk = []
@@ -46,14 +49,39 @@ class MongoDBAdapter(DatastoreAdapter):
             yield chunk
 
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         collection = self.db[table_name]
         for update_data in data:
             collection.update_many(filters, {"$set": update_data})
 
     def delete(self, table_name: str, filters: Dict[str, Any]):
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         collection = self.db[table_name]
         collection.delete_many(filters)
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Execute a raw SQL query (not supported for MongoDB)."""
+        """Execute a raw SQL query (not supported for MongoDB). Use MongoDB query syntax instead."""
         raise NotImplementedError("SQL execution is not supported for MongoDBAdapter")
+
+    def list_tables(self, schema: str) -> List[str]:
+        """List collections in the MongoDB database."""
+        try:
+            return self.db.list_collection_names()
+        except Exception as e:
+            logger.error(f"Failed to list collections: {e}")
+            return []
+
+    def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
+        """Get metadata for all collections in the MongoDB database."""
+        metadata = {}
+        for collection_name in self.list_tables(schema):
+            collection = self.db[collection_name]
+            sample_doc = collection.find_one()
+            if sample_doc:
+                columns = {key: str(type(value).__name__) for key, value in sample_doc.items()}
+                pk_columns = self.table_info.keys.split(",") if self.table_info else ["_id"]
+                metadata[collection_name] = {
+                    "columns": columns,
+                    "primary_keys": pk_columns
+                }
+        return metadata

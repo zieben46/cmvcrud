@@ -1,8 +1,8 @@
-# datastorekit/adapters/spark_adapter.py
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 from delta.tables import DeltaTable
 from datastorekit.adapters.base import DatastoreAdapter
+from datastorekit.connection import DatastoreConnection
 from typing import List, Dict, Any, Iterator, Optional
 import logging
 import pandas as pd
@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 class SparkAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
-        self.profile = profile
-        self.db_engine = DBEngine(profile)
-        self.spark = self.db_engine.get_spark()
+        super().__init__(profile)
+        self.connection = DatastoreConnection(profile)
+        self.spark = self.connection.get_spark()
         self.catalog = profile.catalog
         self.schema = profile.schema
 
@@ -28,11 +28,11 @@ class SparkAdapter(DatastoreAdapter):
                 )
         except Exception as e:
             logger.warning(f"Failed to validate keys for table {table_name}: {e}")
-            return  # Assume TableInfo.keys if table not found
+            return
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
         """Insert records into a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         try:
             df = self.spark.createDataFrame(data)
             df.write.format("delta").mode("append").saveAsTable(f"{self.catalog}.{self.schema}.{table_name}")
@@ -42,7 +42,7 @@ class SparkAdapter(DatastoreAdapter):
 
     def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Select records from a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         try:
             df = self.spark.table(f"{self.catalog}.{self.schema}.{table_name}")
             for key, value in filters.items():
@@ -53,12 +53,12 @@ class SparkAdapter(DatastoreAdapter):
             return []
 
     def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        """Select records in chunks from a Delta table."""
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         try:
             df = self.spark.table(f"{self.catalog}.{self.schema}.{table_name}")
             for key, value in filters.items():
                 df = df.filter(col(key) == value)
-            # Repartition based on chunk size
             num_partitions = max(1, df.count() // chunk_size + 1)
             df = df.repartition(num_partitions)
             rdd = df.rdd.map(lambda row: row.asDict())
@@ -70,7 +70,7 @@ class SparkAdapter(DatastoreAdapter):
 
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
         """Update records in a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         try:
             df = self.spark.table(f"{self.catalog}.{self.schema}.{table_name}")
             for key, value in filters.items():
@@ -88,11 +88,8 @@ class SparkAdapter(DatastoreAdapter):
 
     def delete(self, table_name: str, filters: Dict[str, Any]):
         """Delete records from a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         try:
-            df = self.spark.table(f"{self.catalog}.{self.schema}.{table_name}")
-            for key, value in filters.items():
-                df = df.filter(col(key) == value)
             delta_table = DeltaTable.forName(self.spark, f"{self.catalog}.{self.schema}.{table_name}")
             condition = " AND ".join([f"target.{key} = {value}" for key, value in filters.items()])
             delta_table.delete(condition)
@@ -103,7 +100,6 @@ class SparkAdapter(DatastoreAdapter):
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a raw SQL query and return results."""
         try:
-            # Spark SQL doesn't support bind parameters directly; substitute manually if provided
             if parameters:
                 formatted_sql = sql
                 for key, value in parameters.items():
@@ -116,3 +112,30 @@ class SparkAdapter(DatastoreAdapter):
         except Exception as e:
             logger.error(f"Failed to execute SQL: {sql}, error: {e}")
             raise
+
+    def list_tables(self, schema: str) -> List[str]:
+        """List tables in the given schema."""
+        try:
+            df = self.spark.sql(f"SHOW TABLES IN {self.catalog}.{schema}")
+            return [row["tableName"] for row in df.collect()]
+        except Exception as e:
+            logger.error(f"Failed to list tables for schema {schema}: {e}")
+            return []
+
+    def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
+        """Get metadata for all tables in the schema."""
+        try:
+            metadata = {}
+            for table_name in self.list_tables(schema):
+                df = self.spark.sql(f"DESCRIBE TABLE {self.catalog}.{schema}.{table_name}")
+                columns = {row["col_name"]: row["data_type"] for row in df.collect() if row["col_name"]}
+                # Delta tables may not have explicit primary keys; use table_info if available
+                pk_columns = self.table_info.keys.split(",") if self.table_info else []
+                metadata[table_name] = {
+                    "columns": columns,
+                    "primary_keys": pk_columns
+                }
+            return metadata
+        except Exception as e:
+            logger.error(f"Failed to get table metadata for schema {schema}: {e}")
+            return {}

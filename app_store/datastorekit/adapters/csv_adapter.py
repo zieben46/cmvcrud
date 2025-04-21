@@ -1,4 +1,3 @@
-# datastorekit/adapters/csv_adapter.py
 import os
 import pandas as pd
 from datastorekit.adapters.base import DatastoreAdapter
@@ -9,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 class CSVAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
+        super().__init__(profile)
         self.base_dir = profile.connection_string or "./data"
-        self.db_type = profile.db_type
         os.makedirs(self.base_dir, exist_ok=True)
 
     def _get_file_path(self, table_name: str) -> str:
@@ -30,7 +29,7 @@ class CSVAdapter(DatastoreAdapter):
             )
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         file_path = self._get_file_path(table_name)
         df = pd.DataFrame(data)
         if os.path.exists(file_path):
@@ -39,7 +38,7 @@ class CSVAdapter(DatastoreAdapter):
         df.to_csv(file_path, index=False)
 
     def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         file_path = self._get_file_path(table_name)
         if not os.path.exists(file_path):
             return []
@@ -49,7 +48,7 @@ class CSVAdapter(DatastoreAdapter):
         return df.to_dict('records')
 
     def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         file_path = self._get_file_path(table_name)
         if not os.path.exists(file_path):
             return
@@ -59,7 +58,7 @@ class CSVAdapter(DatastoreAdapter):
             yield chunk.to_dict('records')
 
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         file_path = self._get_file_path(table_name)
         if not os.path.exists(file_path):
             return
@@ -73,7 +72,7 @@ class CSVAdapter(DatastoreAdapter):
         df.to_csv(file_path, index=False)
 
     def delete(self, table_name: str, filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         file_path = self._get_file_path(table_name)
         if not os.path.exists(file_path):
             return
@@ -87,3 +86,26 @@ class CSVAdapter(DatastoreAdapter):
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a raw SQL query (not supported for CSV)."""
         raise NotImplementedError("SQL execution is not supported for CSVAdapter")
+
+    def list_tables(self, schema: str) -> List[str]:
+        """List tables (CSV files) in the base directory."""
+        try:
+            return [os.path.splitext(f)[0] for f in os.listdir(self.base_dir) if f.endswith(".csv")]
+        except Exception as e:
+            logger.error(f"Failed to list tables in {self.base_dir}: {e}")
+            return []
+
+    def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
+        """Get metadata for all CSV tables."""
+        metadata = {}
+        for table_name in self.list_tables(schema):
+            file_path = self._get_file_path(table_name)
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path, nrows=1)
+                columns = {col: str(df[col].dtype) for col in df.columns}
+                pk_columns = self.table_info.keys.split(",") if self.table_info else []
+                metadata[table_name] = {
+                    "columns": columns,
+                    "primary_keys": pk_columns
+                }
+        return metadata

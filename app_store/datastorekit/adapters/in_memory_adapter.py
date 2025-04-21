@@ -1,4 +1,3 @@
-# datastorekit/adapters/in_memory_adapter.py
 from datastorekit.adapters.base import DatastoreAdapter
 from typing import List, Dict, Any, Iterator, Optional
 import copy
@@ -8,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 class InMemoryAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
+        super().__init__(profile)
         self.data = {}  # {table_name: List[Dict]}
 
     def validate_keys(self, table_name: str, table_info_keys: List[str]):
@@ -21,13 +21,13 @@ class InMemoryAdapter(DatastoreAdapter):
                 )
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         if table_name not in self.data:
             self.data[table_name] = []
         self.data[table_name].extend(copy.deepcopy(data))
 
     def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         if table_name not in self.data:
             return []
         result = []
@@ -37,7 +37,7 @@ class InMemoryAdapter(DatastoreAdapter):
         return result
 
     def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         if table_name not in self.data:
             return
         chunk = []
@@ -51,7 +51,7 @@ class InMemoryAdapter(DatastoreAdapter):
             yield chunk
 
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         if table_name not in self.data:
             return
         for record in self.data[table_name]:
@@ -60,7 +60,7 @@ class InMemoryAdapter(DatastoreAdapter):
                     record.update(copy.deepcopy(update_data))
 
     def delete(self, table_name: str, filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(",") if hasattr(self, 'table_info') else ["unique_id"])
+        self.validate_keys(table_name, self.table_info.keys.split(","))
         if table_name not in self.data:
             return
         self.data[table_name] = [
@@ -71,3 +71,20 @@ class InMemoryAdapter(DatastoreAdapter):
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a raw SQL query (not supported for InMemoryAdapter)."""
         raise NotImplementedError("SQL execution is not supported for InMemoryAdapter")
+
+    def list_tables(self, schema: str) -> List[str]:
+        """List tables in the in-memory datastore."""
+        return list(self.data.keys())
+
+    def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
+        """Get metadata for all tables in the in-memory datastore."""
+        metadata = {}
+        for table_name in self.data:
+            if self.data[table_name]:
+                columns = {key: str(type(value).__name__) for key, value in self.data[table_name][0].items()}
+                pk_columns = self.table_info.keys.split(",") if self.table_info else []
+                metadata[table_name] = {
+                    "columns": columns,
+                    "primary_keys": pk_columns
+                }
+        return metadata
