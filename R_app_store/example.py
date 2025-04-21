@@ -23,7 +23,6 @@ SCHEMA <- list(
 # Initialize orchestrator with .env files
 env_paths <- c(
   file.path(".env", ".env.postgres_prod"),
-  file.path(".env", ".env.databricks_prod"),
   file.path(".env", ".env.csv_prod")
 )
 orchestrator <- DataStoreOrchestrator$new(env_paths = env_paths)
@@ -100,17 +99,4 @@ print(csv_data)
 tables <- orchestrator$list_tables("prod_db", "public")
 cat("Tables in PostgreSQL (public schema):\n")
 print(tables)
-# Output: e.g., c("test_table", ...)
-
-# Get table metadata in PostgreSQL
-metadata <- orchestrator$list_tables("prod_db", "public", include_metadata = TRUE)
-cat("Table metadata in PostgreSQL (public schema):\n")
-print(metadata)
-# Output: list of table metadata, e.g., list(test_table = list(columns = list(...), primary_keys = c("unique_id")))
-
-# Cleanup (drop tables)
-orchestrator$adapters[["prod_db:public"]]$connection$conn |> 
-  DBI::dbExecute("DROP TABLE IF EXISTS public.test_table")
-file_path <- file.path(orchestrator$adapters[["csv_db:default"]]$base_dir, "test_table.csv")
-if (file.exists(file_path)) file.remove(file_path)
-cat("Cleaned up tables\n")
+# Output: e.g., c("test_table",
