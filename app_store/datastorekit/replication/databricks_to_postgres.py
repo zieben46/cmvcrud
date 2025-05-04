@@ -5,9 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
-from datastorekit.utils import detect_changes
 from datastorekit.exceptions import DatastoreOperationError, DuplicateKeyError, NullValueError
-import pandas as pd
 import logging
 from datetime import datetime
 
@@ -87,7 +85,7 @@ class DatabricksToPostgresReplicator:
                     "operation_parameters": "",
                     "num_affected_rows": 0
                 }
-                history_table.create(history_record)  # SCD handler normalizes
+                history_table.create(history_record)
                 num_records = self._full_load(source_table, target_table)
                 self._update_history(history_table, max_version + 1 if max_version is not None else 1, num_records)
                 return True
@@ -115,11 +113,11 @@ class DatabricksToPostgresReplicator:
                     "timestamp": datetime.now(),
                     "operation": "INCREMENTAL_MERGE",
                     "operation_parameters": f"version_range={version_range}",
-                    "num_affected_rows": total_changes
+                    "num_affected_rows": 0
                 }
                 history_table.create(history_record)
-                self._incremental_merge(source_table, target_table, version_range)
-                self._update_history(history_table, max_version + 1 if max_version is not None else 1, total_changes)
+                num_changes = self._incremental_merge(source_table, target_table, version_range)
+                self._update_history(history_table, max_version + 1 if max_version is not None else 1, num_changes)
 
             logger.info("Replication completed successfully")
             return True
@@ -134,10 +132,10 @@ class DatabricksToPostgresReplicator:
         self.orchestrator.sync_tables(
             source_db=self.source_db,
             source_schema=self.source_schema,
-            source_table=source_table.table_name,
+            source_table_name=source_table.table_name,
             target_db=self.target_db,
             target_schema=self.target_schema,
-            target_table=target_table.table_name,
+            target_table_name=target_table.table_name,
             filters=None,
             chunk_size=self.batch_size
         )
@@ -145,43 +143,55 @@ class DatabricksToPostgresReplicator:
         logger.info(f"Completed full load of approximately {total_records} records into {self.target_schema}.{target_table.table_name}")
         return total_records
 
-    def _incremental_merge(self, source_table: DBTable, target_table: DBTable, version_range: Tuple[int, int]):
+    def _incremental_merge(self, source_table: DBTable, target_table: DBTable, version_range: Tuple[int, int]) -> int:
         start_version, end_version = version_range
         logger.info(f"Fetching CDF changes for {self.source_schema}.{source_table.table_name} from version {start_version} to {end_version}")
 
+        changes = []
         with source_table.adapter.session_factory() as session:
             cdf_query = f"""
                 SELECT * FROM table_changes('{self.source_schema}.{source_table.table_name}', {start_version}, {end_version})
             """
-            changes = []
             for chunk in session.execution_options(yield_per=self.cdf_batch_size).execute(text(cdf_query)).partitions():
                 changes.extend([dict(row._mapping) for row in chunk])
 
         total_changes = len(changes)
         logger.info(f"Processing {total_changes} CDF changes into {self.target_schema}.{target_table.table_name}")
 
-        source_changes = []
-        for change in changes:
-            if change["_change_type"] in ["insert", "update_postimage"]:
-                record = {k: v for k, v in change.items() if not k.startswith("_")}
-                source_changes.append(record)
-            elif change["_change_type"] == "delete":
-                pass
-
-        source_df = pd.DataFrame(source_changes) if source_changes else pd.DataFrame(columns=target_table.table_info.columns.keys())
-        target_data = target_table.read()
-        target_df = pd.DataFrame(target_data) if target_data else pd.DataFrame(columns=target_table.table_info.columns.keys())
-
         target_adapter = self.orchestrator.adapters[f"{self.target_db}:{self.target_schema}"]
-        self.orchestrator.process_changes(
-            adapter=target_adapter,
-            table_name=target_table.table_name,
-            source_df=source_df,
-            target_df=target_df,
-            chunk_size=self.cdf_batch_size
-        )
+        processed_changes = 0
+
+        # Process changes in chunks
+        for i in range(0, total_changes, self.cdf_batch_size):
+            chunk = changes[i:i + self.cdf_batch_size]
+            inserts = []
+            updates = []
+            deletes = []
+            for change in chunk:
+                change_type = change["_change_type"]
+                record = {k: v for k, v in change.items() if not k.startswith("_")}
+                if change_type in ["insert", "update_postimage"]:
+                    inserts.append(record)
+                elif change_type == "update_preimage":
+                    updates.append(record)
+                elif change_type == "delete":
+                    deletes.append(record)
+
+            try:
+                target_adapter.apply_changes(
+                    table_name=target_table.table_name,
+                    inserts=inserts,
+                    updates=updates,
+                    deletes=deletes
+                )
+                processed_changes += len(chunk)
+                logger.debug(f"Applied chunk {i // self.cdf_batch_size + 1} with {len(chunk)} changes")
+            except Exception as e:
+                logger.error(f"Failed to apply chunk {i // self.cdf_batch_size + 1}: {e}")
+                raise DatastoreOperationError(f"Failed to apply chunk: {e}")
 
         logger.info(f"Completed incremental merge of {total_changes} changes into {self.target_schema}.{target_table.table_name}")
+        return total_changes
 
     def _get_max_history_version(self, history_table: DBTable) -> int:
         with history_table.adapter.session_factory() as session:
