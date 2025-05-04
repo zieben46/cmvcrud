@@ -85,3 +85,44 @@ class MongoDBAdapter(DatastoreAdapter):
                     "primary_keys": pk_columns
                 }
         return metadata
+    
+
+    from pymongo import ClientSession
+
+    def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
+                      updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
+        key_columns = self.profile.keys.split(",")  # e.g., ["key1", "key2"]
+        try:
+            with self.client.start_session() as session:
+                with session.start_transaction():
+                    collection = self.db[table_name]
+                    # Batch inserts
+                    if inserts:
+                        collection.insert_many(inserts, session=session)
+                        logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
+
+                    # Batch updates
+                    if updates:
+                        for update_data in updates:
+                            # Build filter for composite keys
+                            key_filter = {key: update_data[key] for key in key_columns}
+                            update_values = {k: v for k, v in update_data.items() if k not in key_columns}
+                            if update_values:
+                                collection.update_one(
+                                    key_filter, {"$set": update_values}, session=session
+                                )
+                        logger.debug(f"Applied {len(updates)} updates to {table_name}")
+
+                    # Batch deletes
+                    if deletes:
+                        key_filters = [{key: d[key] for key in key_columns} for d in deletes]
+                        if key_filters:
+                            collection.delete_many({"$or": key_filters}, session=session)
+                        logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
+
+        except MongoDuplicateKeyError as e:
+            logger.error(f"Duplicate key error in MongoDB apply_changes for {table_name}: {e}")
+            raise DuplicateKeyError(f"Duplicate key error during apply_changes on {table_name}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to apply changes to {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}"

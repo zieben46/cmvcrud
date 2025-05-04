@@ -1,4 +1,4 @@
-```python
+# ```python
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.automap import automap_base

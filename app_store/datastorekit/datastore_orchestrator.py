@@ -1,48 +1,23 @@
+# datastorekit/orchestrator.py
 from typing import Dict, List, Optional, Union
 from sqlalchemy import Table, MetaData, Column, Integer, String, Float, DateTime, Boolean
+from sqlalchemy.sql import text
 from datastorekit.adapters.base import DatastoreAdapter
-from datastorekit.adapters.sqlalchemy_orm_adapter import SQLAlchemyORMAdapter
-from datastorekit.adapters.sqlalchemy_core_adapter import SQLAlchemyCoreAdapter
-from datastorekit.adapters.csv_adapter import CSVAdapter
-from datastorekit.adapters.in_memory_adapter import InMemoryAdapter
-from datastorekit.adapters.mongodb_adapter import MongoDBAdapter
-from datastorekit.adapters.spark_adapter import SparkAdapter
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
 from datastorekit.profile import DatabaseProfile
+from datastorekit.utils import detect_changes
+from datastorekit.exceptions import DatastoreOperationError
+import pandas as pd
+import logging
 import os
 from datetime import datetime, date
 
-class AdapterRegistry:
-    """Registry for mapping db_types to adapter classes."""
-    _adapters: Dict[str, type[DatastoreAdapter]] = {
-        "csv": CSVAdapter,
-        "inmemory": InMemoryAdapter,
-        "mongodb": MongoDBAdapter,
-        "spark": SparkAdapter,
-        "postgres": SQLAlchemyORMAdapter,
-        "sqlite": SQLAlchemyORMAdapter,
-        "databricks": SQLAlchemyCoreAdapter,
-    }
-
-    @classmethod
-    def register_adapter(cls, db_type: str, adapter_class: type[DatastoreAdapter]):
-        """Register a custom adapter for a given db_type."""
-        cls._adapters[db_type] = adapter_class
-
-    @classmethod
-    def get_adapter_class(cls, db_type: str) -> Optional[type[DatastoreAdapter]]:
-        """Retrieve the adapter class for a given db_type."""
-        return cls._adapters.get(db_type)
+logger = logging.getLogger(__name__)
 
 class DataStoreOrchestrator:
     def __init__(self, env_paths: List[str] = None, profiles: List[DatabaseProfile] = None):
-        """Initialize with .env file paths or DatabaseProfile instances.
-
-        Args:
-            env_paths: List of paths to .env files for database configurations.
-            profiles: List of DatabaseProfile instances for direct configuration.
-        """
+        """Initialize with .env file paths or DatabaseProfile instances."""
         self.adapters: Dict[str, DatastoreAdapter] = {}
         if env_paths:
             for path in env_paths:
@@ -55,7 +30,7 @@ class DataStoreOrchestrator:
             raise ValueError("No valid datastore configurations provided")
 
     def _load_profile(self, env_path: str) -> DatabaseProfile:
-        """Private: Load a DatabaseProfile from a .env file based on its type."""
+        """Load a DatabaseProfile from a .env file based on its type."""
         env_path_lower = env_path.lower()
         profile_map = {
             "postgres": DatabaseProfile.postgres,
@@ -71,34 +46,164 @@ class DataStoreOrchestrator:
         raise ValueError(f"Unknown datastore type for {env_path}")
 
     def _add_adapter(self, profile: DatabaseProfile):
-        """Private: Add a DatastoreAdapter for a given profile."""
+        """Add a DatastoreAdapter for a given profile."""
         adapter = self._create_adapter(profile)
         key = f"{profile.dbname}:{profile.schema or 'default'}"
         self.adapters[key] = adapter
         print(f"Initialized datastore: {key}")
 
     def _create_adapter(self, profile: DatabaseProfile) -> DatastoreAdapter:
-        """Private: Create a DatastoreAdapter based on the profile's db_type."""
+        """Create a DatastoreAdapter based on the profile's db_type."""
         adapter_class = AdapterRegistry.get_adapter_class(profile.db_type)
         if not adapter_class:
             raise ValueError(f"Unsupported db_type: {profile.db_type}")
         return adapter_class(profile)
+
+    def process_changes(self, adapter: DatastoreAdapter, table_name: str, source_df: pd.DataFrame, target_df: pd.DataFrame, chunk_size: Optional[int] = None):
+        """Apply changes to the database based on DataFrame comparison, with optional chunking."""
+        try:
+            key_columns = adapter.profile.keys.split(",")
+            if chunk_size:
+                # Process in chunks for large datasets
+                for i in range(0, len(source_df), chunk_size):
+                    source_chunk = source_df.iloc[i:i + chunk_size]
+                    inserts, updates, deletes = detect_changes(source_chunk, target_df, key_columns)
+                    logger.debug(f"Chunk {i // chunk_size + 1}: {len(inserts)} inserts, {len(updates)} updates, {len(deletes)} deletes for {table_name}")
+                    adapter.apply_changes(table_name, inserts, updates, deletes)
+            else:
+                # Process all at once for small datasets
+                inserts, updates, deletes = detect_changes(source_df, target_df, key_columns)
+                logger.debug(f"Computed {len(inserts)} inserts, {len(updates)} updates, {len(deletes)} deletes for {table_name}")
+                adapter.apply_changes(table_name, inserts, updates, deletes)
+        except Exception as e:
+            logger.error(f"Failed to process changes for table {table_name} with adapter {adapter.profile.db_type}: {e}")
+            raise DatastoreOperationError(f"Failed to process changes: {e}")
+
+    def sync_tables(self, source_db: str, source_schema: str, source_table: str,
+                    target_db: str, target_schema: str, target_table: str, 
+                    filters: Optional[Dict] = None, chunk_size: Optional[int] = None):
+        """
+        Synchronize source table to target table with schema checking and optional chunking.
+
+        Logic:
+        - If target table doesn't exist: Create table, insert all records.
+        - If target table exists but schema changed: Drop table, create table, insert records.
+        - If target table exists and schema unchanged: Apply changes via process_changes.
+
+        Args:
+            source_db: Source database name.
+            source_schema: Source schema name.
+            source_table: Source table name.
+            target_db: Target database name.
+            target_schema: Target schema name.
+            target_table: Target table name.
+            filters: Optional filters for source data.
+            chunk_size: Optional chunk size for processing large datasets.
+        """
+        try:
+            source_key = f"{source_db}:{source_schema or 'default'}"
+            target_key = f"{target_db}:{target_schema or 'default'}"
+            source_adapter = self.adapters.get(source_key)
+            target_adapter = self.adapters.get(target_key)
+            if not source_adapter or not target_adapter:
+                raise KeyError(f"Source ({source_key}) or target ({target_key}) datastore not found")
+
+            # Initialize table info
+            source_table_info = TableInfo(
+                table_name=source_table, 
+                keys=source_adapter.profile.keys, 
+                scd_type="type1", 
+                datastore_key=source_key,
+                columns={}  # Will be populated from schema
+            )
+            target_table_info = TableInfo(
+                table_name=target_table, 
+                keys="_id" if target_db == "mydb" else target_adapter.profile.keys,
+                scd_type="type1", 
+                datastore_key=target_key,
+                columns={}
+            )
+            source_table = DBTable(source_adapter, source_table_info)
+            target_table = DBTable(target_adapter, target_table_info)
+
+            # Check if target table exists
+            target_tables = self.list_tables(target_db, target_schema)
+            table_exists = target_table.table_name in target_tables
+
+            # Get schema metadata
+            source_schema = source_adapter.get_table_metadata(source_schema or "public").get(source_table.table_name, {})
+            target_schema = target_adapter.get_table_metadata(target_schema or "public").get(target_table.table_name, {}) if table_exists else {}
+
+            # Compare schemas (columns and their types)
+            schema_changed = False
+            if table_exists:
+                source_columns = source_schema.get("columns", {})
+                target_columns = target_schema.get("columns", {})
+                schema_changed = source_columns != target_columns
+
+            if not table_exists or schema_changed:
+                # Create or recreate table
+                if table_exists:
+                    logger.info(f"Schema changed for {target_schema}.{target_table.table_name}. Dropping and recreating table.")
+                    # Drop table (SQL-based adapters)
+                    if isinstance(target_adapter, (SQLAlchemyCoreAdapter, SQLAlchemyORMAdapter)):
+                        with target_adapter.engine.connect() as conn:
+                            conn.execute(text(f"DROP TABLE {target_schema}.{target_table.table_name}"))
+                            conn.commit()
+                    elif isinstance(target_adapter, MongoDBAdapter):
+                        target_adapter.db[target_table.table_name].drop()
+                    elif isinstance(target_adapter, SparkAdapter):
+                        target_adapter.spark.sql(f"DROP TABLE {target_table.table_name}")
+                    elif isinstance(target_adapter, CSVAdapter):
+                        if os.path.exists(target_adapter.file_path):
+                            os.remove(target_adapter.file_path)
+                    else:
+                        raise ValueError(f"Unsupported adapter for dropping table: {type(target_adapter)}")
+
+                logger.info(f"Creating target table {target_schema}.{target_table.table_name}...")
+                self._create_target_table(target_adapter, target_db, target_schema, target_table, source_table)
+
+                # Insert all source records (no need for process_changes since it's a full insert)
+                source_data = source_table.read(filters)
+                if not source_data:
+                    logger.info(f"No data to insert into {target_schema}.{target_table.table_name}")
+                    return
+
+                if chunk_size:
+                    # Chunk inserts for large datasets
+                    source_df = pd.DataFrame(source_data)
+                    for i in range(0, len(source_df), chunk_size):
+                        chunk = source_df.iloc[i:i + chunk_size].to_dict("records")
+                        target_adapter.apply_changes(target_table.table_name, inserts=chunk, updates=[], deletes=[])
+                        logger.debug(f"Inserted chunk {i // chunk_size + 1} with {len(chunk)} records")
+                else:
+                    # Insert all at once for small datasets
+                    target_adapter.apply_changes(target_table.table_name, inserts=source_data, updates=[], deletes=[])
+                    logger.debug(f"Inserted {len(source_data)} records")
+
+            else:
+                # Schema unchanged, use process_changes
+                logger.info(f"Schema unchanged for {target_schema}.{target_table.table_name}. Applying changes.")
+                source_data = source_table.read(filters)
+                target_data = target_table.read({})
+                source_df = pd.DataFrame(source_data)
+                target_df = pd.DataFrame(target_data)
+                self.process_changes(target_adapter, target_table.table_name, source_df, target_df, chunk_size=chunk_size)
+
+            print(f"Synchronized {source_db}:{source_schema}.{source_table} "
+                  f"to {target_db}:{target_schema}.{target_table}")
+
+        except Exception as e:
+            logger.error(f"Table synchronization failed from {source_db}:{source_schema}.{source_table} "
+                         f"to {target_db}:{target_schema}.{target_table}: {e}")
+            raise DatastoreOperationError(f"Table synchronization failed: {e}")
 
     def list_adapters(self) -> List[str]:
         """List all managed datastore keys (e.g., 'dbname:schema')."""
         return list(self.adapters.keys())
 
     def list_tables(self, db_name: str, schema: str, include_metadata: bool = False) -> Union[List[str], Dict[str, Dict]]:
-        """List tables in a specific datastore, optionally with metadata.
-
-        Args:
-            db_name: Name of the database.
-            schema: Schema name (or None for default).
-            include_metadata: If True, return table metadata instead of just names.
-
-        Returns:
-            List of table names or dict with table metadata.
-        """
+        """List tables in a specific datastore, optionally with metadata."""
         key = f"{db_name}:{schema or 'default'}"
         if key not in self.adapters:
             raise KeyError(f"No datastore found for key: {key}")
@@ -107,32 +212,14 @@ class DataStoreOrchestrator:
         return self.adapters[key].list_tables(schema or "public")
 
     def get_table_metadata(self, db_name: str, schema: str) -> Dict[str, Dict]:
-        """Get metadata for all tables in a datastore.
-
-        Args:
-            db_name: Name of the database.
-            schema: Schema name (or None for default).
-
-        Returns:
-            Dict with table names as keys and metadata (e.g., columns, keys) as values.
-        """
+        """Get metadata for all tables in a datastore."""
         key = f"{db_name}:{schema or 'default'}"
         if key not in self.adapters:
             raise KeyError(f"No datastore found for key: {key}")
         return self.adapters[key].get_table_metadata(schema or "public")
 
     def query(self, db_name: str, schema: str, query_str: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Execute a raw query on a specific datastore.
-
-        Args:
-            db_name: Name of the database.
-            schema: Schema name (or None for default).
-            query_str: Query string (e.g., SQL for SQL-based adapters).
-            parameters: Optional query parameters.
-
-        Returns:
-            List of result records.
-        """
+        """Execute a raw query on a specific datastore."""
         key = f"{db_name}:{schema or 'default'}"
         if key not in self.adapters:
             raise KeyError(f"No datastore found for key: {key}")
@@ -146,58 +233,8 @@ class DataStoreOrchestrator:
         adapter.table_info = table_info
         return DBTable(adapter, table_info)
 
-    def replicate(self, source_db: str, source_schema: str, source_table: str,
-                  target_db: str, target_schema: str, target_table: str, filters: Dict = None):
-        """Replicate data from a source table to a target table across datastores."""
-        try:
-            source_key = f"{source_db}:{source_schema or 'default'}"
-            target_key = f"{target_db}:{target_schema or 'default'}"
-            source_adapter = self.adapters.get(source_key)
-            target_adapter = self.adapters.get(target_key)
-            if not source_adapter or not target_adapter:
-                raise KeyError(f"Source ({source_key}) or target ({target_key}) datastore not found")
-
-            source_table_info = TableInfo(
-                table_name=source_table,
-                keys="unique_id",
-                scd_type="type1",
-                datastore_key=source_key,
-                columns={"unique_id": "Integer", "category": "String", "amount": "Float"}
-            )
-            target_table_info = TableInfo(
-                table_name=target_table,
-                keys="_id" if target_db == "mydb" else "unique_id",
-                scd_type="type1",
-                datastore_key=target_key,
-                columns={"unique_id": "Integer", "category": "String", "amount": "Float"}
-            )
-            source_table = DBTable(source_adapter, source_table_info)
-            target_table = DBTable(target_adapter, target_table_info)
-
-            target_tables = self.list_tables(target_db, target_schema)
-            if target_table not in target_tables:
-                print(f"Creating target table {target_schema}.{target_table}...")
-                self._create_target_table(target_adapter, target_db, target_schema, target_table, source_table)
-
-            data = source_table.read(filters)
-            if not data:
-                print(f"No data to replicate from {source_schema}.{source_table}")
-                return
-
-            for record in data:
-                record_copy = record.copy()
-                if target_db == "mydb":
-                    record_copy["_id"] = record_copy.pop("unique_id", None)
-                target_table.create([record_copy])
-
-            print(f"Replicated {len(data)} records from {source_db}:{source_schema}.{source_table} "
-                  f"to {target_db}:{target_schema}.{target_table}")
-        except Exception as e:
-            print(f"Replication failed: {e}")
-            raise
-
     def _create_target_table(self, target_adapter: DatastoreAdapter, target_db: str, target_schema: str, target_table: DBTable, source_table: DBTable):
-        """Private: Create the target table if it doesn't exist, inferring schema from the source table."""
+        """Create the target table if it doesn't exist, inferring schema from the source table."""
         try:
             sample_data = source_table.read(filters=None)
             schema = target_table.table_info.columns if target_table.table_info.columns else {}

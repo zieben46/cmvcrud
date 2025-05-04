@@ -109,3 +109,43 @@ class CSVAdapter(DatastoreAdapter):
                     "primary_keys": pk_columns
                 }
         return metadata
+    
+    def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
+                      updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
+        key_columns = self.profile.keys.split(",")  # e.g., ["key1", "key2"]
+        try:
+            # Load current data
+            current_df = pd.read_csv(self.file_path)
+            new_df = current_df.copy()
+
+            # Batch inserts
+            if inserts:
+                new_df = pd.concat([new_df, pd.DataFrame(inserts)], ignore_index=True)
+                logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
+
+            # Batch updates
+            if updates:
+                for update_data in updates:
+                    key_values = tuple(update_data[key] for key in key_columns)
+                    mask = new_df[key_columns].eq(key_values).all(axis=1)
+                    for k, v in update_data.items():
+                        if k not in key_columns:
+                            new_df.loc[mask, k] = v
+                logger.debug(f"Applied {len(updates)} updates to {table_name}")
+
+            # Batch deletes
+            if deletes:
+                key_tuples = [tuple(d[key] for key in key_columns) for d in deletes]
+                mask = new_df[key_columns].apply(tuple, axis=1).isin(key_tuples)
+                new_df = new_df[~mask]
+                logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
+
+            # Write to temporary file
+            temp_path = self.file_path + ".tmp"
+            new_df.to_csv(temp_path, index=False)
+            # Replace original file only on success
+            os.replace(temp_path, self.file_path)
+
+        except Exception as e:
+            logger.error(f"Failed to apply changes to {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")

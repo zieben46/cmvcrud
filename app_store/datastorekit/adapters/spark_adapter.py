@@ -139,3 +139,40 @@ class SparkAdapter(DatastoreAdapter):
         except Exception as e:
             logger.error(f"Failed to get table metadata for schema {schema}: {e}")
             return {}
+        
+    def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
+                      updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
+        key_columns = self.profile.keys.split(",")  # e.g., ["key1", "key2"]
+        try:
+            delta_table = DeltaTable.forName(self.spark, table_name)
+            
+            # Batch inserts
+            if inserts:
+                insert_df = self.spark.createDataFrame(inserts)
+                insert_df.write.mode("append").saveAsTable(table_name)
+                logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
+
+            # Batch updates (using merge)
+            if updates:
+                update_df = self.spark.createDataFrame(updates)
+                merge_condition = " AND ".join(f"t.{key} = s.{key}" for key in key_columns)
+                delta_table.alias("t").merge(
+                    update_df.alias("s"),
+                    merge_condition
+                ).whenMatchedUpdateAll().execute()
+                logger.debug(f"Applied {len(updates)} updates to {table_name}")
+
+            # Batch deletes
+            if deletes:
+                delete_conditions = [
+                    " AND ".join(f"{key} = {repr(d[key])}" for key in key_columns) for d in deletes
+                ]
+                if delete_conditions:
+                    delta_table.delete(" OR ".join(f"({cond})" for cond in delete_conditions))
+                logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to apply changes to {table_name}: {e}")
+            if "duplicate key" in str(e).lower():
+                raise DuplicateKeyError(f"Duplicate key error during apply_changes on {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")

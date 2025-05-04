@@ -51,3 +51,9 @@ class DatastoreAdapter(ABC):
     def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
         """Get metadata for all tables in the schema."""
         pass
+
+    @abstractmethod
+    def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
+                      updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
+        """Apply inserts, updates, and deletes atomically to the specified table."""
+        pass
