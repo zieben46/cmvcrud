@@ -60,18 +60,15 @@ class DataStoreOrchestrator:
         return adapter_class(profile)
 
     def process_changes(self, adapter: DatastoreAdapter, table_name: str, source_df: pd.DataFrame, target_df: pd.DataFrame, chunk_size: Optional[int] = None):
-        """Apply changes to the database based on DataFrame comparison, with optional chunking."""
         try:
-            key_columns = adapter.profile.keys.split(",")
+            key_columns = adapter.profile.keys.split(",") if adapter.profile.keys else adapter.get_reflected_keys(table_name)
             if chunk_size:
-                # Process in chunks for large datasets
                 for i in range(0, len(source_df), chunk_size):
                     source_chunk = source_df.iloc[i:i + chunk_size]
                     inserts, updates, deletes = detect_changes(source_chunk, target_df, key_columns)
                     logger.debug(f"Chunk {i // chunk_size + 1}: {len(inserts)} inserts, {len(updates)} updates, {len(deletes)} deletes for {table_name}")
                     adapter.apply_changes(table_name, inserts, updates, deletes)
             else:
-                # Process all at once for small datasets
                 inserts, updates, deletes = detect_changes(source_df, target_df, key_columns)
                 logger.debug(f"Computed {len(inserts)} inserts, {len(updates)} updates, {len(deletes)} deletes for {table_name}")
                 adapter.apply_changes(table_name, inserts, updates, deletes)
@@ -79,27 +76,9 @@ class DataStoreOrchestrator:
             logger.error(f"Failed to process changes for table {table_name} with adapter {adapter.profile.db_type}: {e}")
             raise DatastoreOperationError(f"Failed to process changes: {e}")
 
-    def sync_tables(self, source_db: str, source_schema: str, source_table: str,
-                    target_db: str, target_schema: str, target_table: str, 
+    def sync_tables(self, source_db: str, source_schema: str, source_table_name: str,
+                    target_db: str, target_schema: str, target_table_name: str, 
                     filters: Optional[Dict] = None, chunk_size: Optional[int] = None):
-        """
-        Synchronize source table to target table with schema checking and optional chunking.
-
-        Logic:
-        - If target table doesn't exist: Create table, insert all records.
-        - If target table exists but schema changed: Drop table, create table, insert records.
-        - If target table exists and schema unchanged: Apply changes via process_changes.
-
-        Args:
-            source_db: Source database name.
-            source_schema: Source schema name.
-            source_table: Source table name.
-            target_db: Target database name.
-            target_schema: Target schema name.
-            target_table: Target table name.
-            filters: Optional filters for source data.
-            chunk_size: Optional chunk size for processing large datasets.
-        """
         try:
             source_key = f"{source_db}:{source_schema or 'default'}"
             target_key = f"{target_db}:{target_schema or 'default'}"
@@ -108,17 +87,16 @@ class DataStoreOrchestrator:
             if not source_adapter or not target_adapter:
                 raise KeyError(f"Source ({source_key}) or target ({target_key}) datastore not found")
 
-            # Initialize table info
             source_table_info = TableInfo(
-                table_name=source_table, 
+                table_name=source_table_name, 
                 keys=source_adapter.profile.keys, 
                 scd_type="type1", 
                 datastore_key=source_key,
-                columns={}  # Will be populated from schema
+                columns={}
             )
             target_table_info = TableInfo(
-                table_name=target_table, 
-                keys="_id" if target_db == "mydb" else target_adapter.profile.keys,
+                table_name=target_table_name, 
+                keys=target_adapter.profile.keys,
                 scd_type="type1", 
                 datastore_key=target_key,
                 columns={}
@@ -126,26 +104,14 @@ class DataStoreOrchestrator:
             source_table = DBTable(source_adapter, source_table_info)
             target_table = DBTable(target_adapter, target_table_info)
 
-            # Check if target table exists
-            target_tables = self.list_tables(target_db, target_schema)
-            table_exists = target_table.table_name in target_tables
-
-            # Get schema metadata
+            table_exists = target_table.table_name in self.list_tables(target_db, target_schema)
             source_schema = source_adapter.get_table_metadata(source_schema or "public").get(source_table.table_name, {})
             target_schema = target_adapter.get_table_metadata(target_schema or "public").get(target_table.table_name, {}) if table_exists else {}
-
-            # Compare schemas (columns and their types)
-            schema_changed = False
-            if table_exists:
-                source_columns = source_schema.get("columns", {})
-                target_columns = target_schema.get("columns", {})
-                schema_changed = source_columns != target_columns
+            schema_changed = table_exists and source_schema.get("columns", {}) != target_schema.get("columns", {})
 
             if not table_exists or schema_changed:
-                # Create or recreate table
                 if table_exists:
                     logger.info(f"Schema changed for {target_schema}.{target_table.table_name}. Dropping and recreating table.")
-                    # Drop table (SQL-based adapters)
                     if isinstance(target_adapter, (SQLAlchemyCoreAdapter, SQLAlchemyORMAdapter)):
                         with target_adapter.engine.connect() as conn:
                             conn.execute(text(f"DROP TABLE {target_schema}.{target_table.table_name}"))
@@ -163,26 +129,22 @@ class DataStoreOrchestrator:
                 logger.info(f"Creating target table {target_schema}.{target_table.table_name}...")
                 self._create_target_table(target_adapter, target_db, target_schema, target_table, source_table)
 
-                # Insert all source records (no need for process_changes since it's a full insert)
                 source_data = source_table.read(filters)
                 if not source_data:
                     logger.info(f"No data to insert into {target_schema}.{target_table.table_name}")
                     return
 
                 if chunk_size:
-                    # Chunk inserts for large datasets
                     source_df = pd.DataFrame(source_data)
                     for i in range(0, len(source_df), chunk_size):
                         chunk = source_df.iloc[i:i + chunk_size].to_dict("records")
                         target_adapter.apply_changes(target_table.table_name, inserts=chunk, updates=[], deletes=[])
                         logger.debug(f"Inserted chunk {i // chunk_size + 1} with {len(chunk)} records")
                 else:
-                    # Insert all at once for small datasets
                     target_adapter.apply_changes(target_table.table_name, inserts=source_data, updates=[], deletes=[])
                     logger.debug(f"Inserted {len(source_data)} records")
 
             else:
-                # Schema unchanged, use process_changes
                 logger.info(f"Schema unchanged for {target_schema}.{target_table.table_name}. Applying changes.")
                 source_data = source_table.read(filters)
                 target_data = target_table.read({})
@@ -234,13 +196,11 @@ class DataStoreOrchestrator:
         return DBTable(adapter, table_info)
 
     def _create_target_table(self, target_adapter: DatastoreAdapter, target_db: str, target_schema: str, target_table: DBTable, source_table: DBTable):
-        """Create the target table if it doesn't exist, inferring schema from the source table."""
         try:
-            sample_data = source_table.read(filters=None)
+            sample_data = source_table.read()
             schema = target_table.table_info.columns if target_table.table_info.columns else {}
             if not sample_data and not schema:
                 schema = {
-                    "unique_id": Integer,
                     "category": String,
                     "amount": Float,
                     "start_date": DateTime,
@@ -251,11 +211,7 @@ class DataStoreOrchestrator:
                 sample_record = sample_data[0]
                 for key, value in sample_record.items():
                     if key not in schema:
-                        if key == "unique_id" and target_db == "mydb":
-                            schema["_id"] = String
-                        elif key == "unique_id":
-                            schema[key] = Integer
-                        elif isinstance(value, str):
+                        if isinstance(value, str):
                             schema[key] = String
                         elif isinstance(value, float):
                             schema[key] = Float
@@ -269,7 +225,7 @@ class DataStoreOrchestrator:
             if isinstance(target_adapter, (SQLAlchemyORMAdapter, SQLAlchemyCoreAdapter)):
                 metadata = MetaData()
                 columns = [
-                    Column(col_name, col_type, primary_key=col_name in target_table.table_info.keys.split(","))
+                    Column(col_name, col_type, primary_key=col_name in (target_table.keys or target_adapter.get_reflected_keys(target_table.table_name)))
                     for col_name, col_type in schema.items()
                 ]
                 Table(target_table.table_name, metadata, *columns, schema=target_schema or None if target_adapter.profile.db_type == "sqlite" else "public")
@@ -282,6 +238,8 @@ class DataStoreOrchestrator:
             elif isinstance(target_adapter, SparkAdapter):
                 print(f"Delta table {target_table.table_name} will be created on first insert")
             elif isinstance(target_adapter, InMemoryAdapter):
+                if target_table.table_name not in target_adapter.data:
+                    target_adapter.data[target_table.table_name] = []
                 print(f"In-memory table {target_table.table_name} initialized")
             else:
                 raise ValueError(f"Unsupported adapter type: {type(target_adapter)}")

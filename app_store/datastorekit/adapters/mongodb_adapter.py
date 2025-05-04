@@ -13,6 +13,10 @@ class MongoDBAdapter(DatastoreAdapter):
         client = MongoClient(profile.connection_string)
         self.db = client[profile.dbname]
 
+    def get_reflected_keys(self, table_name: str) -> List[str]:
+        """MongoDB uses '_id' as the default key unless overridden."""
+        return ["_id"]  # Default for MongoDB collection
+
     def validate_keys(self, table_name: str, table_info_keys: List[str]):
         """Validate that table_info.keys are present in the collection."""
         collection = self.db[table_name]
@@ -25,15 +29,20 @@ class MongoDBAdapter(DatastoreAdapter):
                 )
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        collection = self.db[table_name]
-        collection.insert_many(data)
+        try:
+            collection = self.db[table_name]
+            collection.insert_many(data)
+        except MongoDuplicateKeyError as e:
+            logger.error(f"Duplicate key error in MongoDB insert for {table_name}: {e}")
+            raise DuplicateKeyError(f"Duplicate key error during insert on {table_name}: {e}")
+        except Exception as e:
+            logger.error(f"Insert failed for {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during insert on {table_name}: {e}")
 
-    def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self.validate_keys(table_name, self.table_info.keys.split(","))
+    def select(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         collection = self.db[table_name]
-        records = collection.find(filters)
-        return [json.loads(json_util.dumps(record)) for record in records]
+        query = filters or {}
+        return list(collection.find(query))
 
     def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
         self.validate_keys(table_name, self.table_info.keys.split(","))
@@ -48,16 +57,24 @@ class MongoDBAdapter(DatastoreAdapter):
         if chunk:
             yield chunk
 
-    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
+    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None):
         collection = self.db[table_name]
-        for update_data in data:
-            collection.update_many(filters, {"$set": update_data})
+        try:
+            for update_data in data:
+                query = filters or {"_id": update_data.get("_id")}
+                collection.update_one(query, {"$set": update_data})
+        except Exception as e:
+            logger.error(f"Update failed for {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during update on {table_name}: {e}")
 
-    def delete(self, table_name: str, filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
+    def delete(self, table_name: str, filters: Optional[Dict[str, Any]] = None):
         collection = self.db[table_name]
-        collection.delete_many(filters)
+        query = filters or {}
+        try:
+            collection.delete_many(query)
+        except Exception as e:
+            logger.error(f"Delete failed for {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during delete on {table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a raw SQL query (not supported for MongoDB). Use MongoDB query syntax instead."""
@@ -91,38 +108,29 @@ class MongoDBAdapter(DatastoreAdapter):
 
     def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
                       updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
-        key_columns = self.profile.keys.split(",")  # e.g., ["key1", "key2"]
+        key_columns = self.get_reflected_keys(table_name)
         try:
             with self.client.start_session() as session:
                 with session.start_transaction():
                     collection = self.db[table_name]
-                    # Batch inserts
                     if inserts:
                         collection.insert_many(inserts, session=session)
                         logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
-
-                    # Batch updates
                     if updates:
                         for update_data in updates:
-                            # Build filter for composite keys
-                            key_filter = {key: update_data[key] for key in key_columns}
+                            key_filter = {key: update_data[key] for key in key_columns if key in update_data}
                             update_values = {k: v for k, v in update_data.items() if k not in key_columns}
                             if update_values:
-                                collection.update_one(
-                                    key_filter, {"$set": update_values}, session=session
-                                )
+                                collection.update_one(key_filter, {"$set": update_values}, session=session)
                         logger.debug(f"Applied {len(updates)} updates to {table_name}")
-
-                    # Batch deletes
                     if deletes:
-                        key_filters = [{key: d[key] for key in key_columns} for d in deletes]
+                        key_filters = [{key: d[key] for key in key_columns if key in d} for d in deletes]
                         if key_filters:
                             collection.delete_many({"$or": key_filters}, session=session)
                         logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
-
         except MongoDuplicateKeyError as e:
             logger.error(f"Duplicate key error in MongoDB apply_changes for {table_name}: {e}")
             raise DuplicateKeyError(f"Duplicate key error during apply_changes on {table_name}: {e}")
         except Exception as e:
             logger.error(f"Failed to apply changes to {table_name}: {e}")
-            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}"
+            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")

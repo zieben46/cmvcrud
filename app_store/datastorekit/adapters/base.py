@@ -2,6 +2,9 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Iterator, Optional
 from datastorekit.profile import DatabaseProfile
 
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional, Union
+
 class DatastoreAdapter(ABC):
     def __init__(self, profile: DatabaseProfile):
         self.profile = profile
@@ -14,12 +17,10 @@ class DatastoreAdapter(ABC):
 
     @abstractmethod
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        """Insert records into a table."""
         pass
 
     @abstractmethod
-    def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Select records from a table."""
+    def select(self, table_name: str, filters: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         pass
 
     @abstractmethod
@@ -28,13 +29,11 @@ class DatastoreAdapter(ABC):
         pass
 
     @abstractmethod
-    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        """Update records in a table."""
+    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]]):
         pass
 
     @abstractmethod
-    def delete(self, table_name: str, filters: Dict[str, Any]):
-        """Delete records from a table."""
+    def delete(self, table_name: str, filters: Optional[Dict[str, Any]]):
         pass
 
     @abstractmethod
@@ -55,5 +54,8 @@ class DatastoreAdapter(ABC):
     @abstractmethod
     def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
                       updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
-        """Apply inserts, updates, and deletes atomically to the specified table."""
+        pass
+
+    @abstractmethod
+    def get_reflected_keys(self, table_name: str) -> List[str]:
         pass

@@ -46,18 +46,20 @@ class SparkDriver(DatabaseDriver):
         table.delete(filters)
 
     def sync_to(self, source_table_info: Dict[str, str], target_driver: 'DatabaseDriver', target_table: str, method: str):
-        """Sync data to the target table."""
         if method != "full_load":
             raise ValueError(f"Unsupported sync method: {method}")
         source_table = source_table_info["table_name"]
-        source_schema = self.orchestrator.adapters[self.datastore_key].profile.schema
+        source_schema = self.orchestrator.adapters[self.datastore_key].profile.schema or "default"
         target_datastore_key = target_driver.datastore_key
         target_db, target_schema = target_datastore_key.split(":")
-        self.orchestrator.replicate(
+        self.orchestrator.sync_tables(
             source_db=self.orchestrator.adapters[self.datastore_key].profile.dbname,
             source_schema=source_schema,
-            source_table=source_table,
+            source_table_name=source_table,
             target_db=target_db,
             target_schema=target_schema,
-            target_table=target_table
+            target_table_name=target_table,
+            filters=None,
+            chunk_size=1000
         )
+        logger.info(f"Synchronized {source_schema}.{source_table} to {target_schema}.{target_table} using {method}")

@@ -17,6 +17,15 @@ class SparkAdapter(DatastoreAdapter):
         self.catalog = profile.catalog
         self.schema = profile.schema
 
+    def get_reflected_keys(self, table_name: str) -> List[str]:
+        try:
+            delta_table = DeltaTable.forName(self.spark, table_name)
+            schema = delta_table.toDF().schema
+            return ["unique_id"]  # Placeholder; customize based on Delta table metadata
+        except Exception as e:
+            logger.error(f"Failed to get reflected keys for table {table_name}: {e}")
+            return []
+
     def validate_keys(self, table_name: str, table_info_keys: List[str]):
         """Validate that table_info.keys are present in the table schema."""
         try:
@@ -31,26 +40,19 @@ class SparkAdapter(DatastoreAdapter):
             return
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        """Insert records into a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(","))
         try:
             df = self.spark.createDataFrame(data)
-            df.write.format("delta").mode("append").saveAsTable(f"{self.catalog}.{self.schema}.{table_name}")
+            df.write.mode("append").saveAsTable(table_name)
         except Exception as e:
-            logger.error(f"Failed to insert into {table_name}: {e}")
-            raise
+            logger.error(f"Insert failed for {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during insert on {table_name}: {e}")
 
-    def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Select records from a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        try:
-            df = self.spark.table(f"{self.catalog}.{self.schema}.{table_name}")
+    def select(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        df = self.spark.table(table_name)
+        if filters:
             for key, value in filters.items():
-                df = df.filter(col(key) == value)
-            return [row.asDict() for row in df.collect()]
-        except Exception as e:
-            logger.error(f"Failed to select from {table_name}: {e}")
-            return []
+                df = df.filter(df[key] == value)
+        return [row.asDict() for row in df.collect()]
 
     def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
         """Select records in chunks from a Delta table."""
@@ -68,34 +70,31 @@ class SparkAdapter(DatastoreAdapter):
             logger.error(f"Failed to select chunks from {table_name}: {e}")
             return
 
-    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        """Update records in a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(","))
+    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None):
         try:
-            df = self.spark.table(f"{self.catalog}.{self.schema}.{table_name}")
-            for key, value in filters.items():
-                df = df.filter(col(key) == value)
-            update_df = self.spark.createDataFrame(data)
-            delta_table = DeltaTable.forName(self.spark, f"{self.catalog}.{self.schema}.{table_name}")
-            condition = " AND ".join([f"target.{key} = source.{key}" for key in filters.keys()])
-            delta_table.alias("target").merge(
-                update_df.alias("source"),
-                condition
-            ).whenMatchedUpdateAll().execute()
+            delta_table = DeltaTable.forName(self.spark, table_name)
+            for update_data in data:
+                update_df = self.spark.createDataFrame([update_data])
+                condition = " AND ".join(f"t.{k} = s.{k}" for k in (filters.keys() if filters else update_data.keys()))
+                delta_table.alias("t").merge(
+                    update_df.alias("s"),
+                    condition
+                ).whenMatchedUpdateAll().execute()
         except Exception as e:
-            logger.error(f"Failed to update {table_name}: {e}")
-            raise
+            logger.error(f"Update failed for {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during update on {table_name}: {e}")
 
-    def delete(self, table_name: str, filters: Dict[str, Any]):
-        """Delete records from a Delta table."""
-        self.validate_keys(table_name, self.table_info.keys.split(","))
+    def delete(self, table_name: str, filters: Optional[Dict[str, Any]] = None):
         try:
-            delta_table = DeltaTable.forName(self.spark, f"{self.catalog}.{self.schema}.{table_name}")
-            condition = " AND ".join([f"target.{key} = {value}" for key, value in filters.items()])
-            delta_table.delete(condition)
+            delta_table = DeltaTable.forName(self.spark, table_name)
+            if filters:
+                condition = " AND ".join(f"{k} = {repr(v)}" for k, v in filters.items())
+                delta_table.delete(condition)
+            else:
+                delta_table.delete()
         except Exception as e:
-            logger.error(f"Failed to delete from {table_name}: {e}")
-            raise
+            logger.error(f"Delete failed for {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during delete on {table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a raw SQL query and return results."""
@@ -142,17 +141,13 @@ class SparkAdapter(DatastoreAdapter):
         
     def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
                       updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
-        key_columns = self.profile.keys.split(",")  # e.g., ["key1", "key2"]
+        key_columns = self.get_reflected_keys(table_name)
         try:
             delta_table = DeltaTable.forName(self.spark, table_name)
-            
-            # Batch inserts
             if inserts:
                 insert_df = self.spark.createDataFrame(inserts)
                 insert_df.write.mode("append").saveAsTable(table_name)
                 logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
-
-            # Batch updates (using merge)
             if updates:
                 update_df = self.spark.createDataFrame(updates)
                 merge_condition = " AND ".join(f"t.{key} = s.{key}" for key in key_columns)
@@ -161,18 +156,13 @@ class SparkAdapter(DatastoreAdapter):
                     merge_condition
                 ).whenMatchedUpdateAll().execute()
                 logger.debug(f"Applied {len(updates)} updates to {table_name}")
-
-            # Batch deletes
             if deletes:
                 delete_conditions = [
-                    " AND ".join(f"{key} = {repr(d[key])}" for key in key_columns) for d in deletes
+                    " AND ".join(f"{key} = {repr(d[key])}" for key in key_columns if key in d) for d in deletes
                 ]
                 if delete_conditions:
                     delta_table.delete(" OR ".join(f"({cond})" for cond in delete_conditions))
                 logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
-
         except Exception as e:
             logger.error(f"Failed to apply changes to {table_name}: {e}")
-            if "duplicate key" in str(e).lower():
-                raise DuplicateKeyError(f"Duplicate key error during apply_changes on {table_name}: {e}")
             raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")

@@ -1,9 +1,11 @@
-# ```python
+# datastorekit/adapters/sqlalchemy_orm_adapter.py
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.automap import automap_base
+from sqlalchemy.exc import IntegrityError
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.connection import DatastoreConnection
+from datastorekit.exceptions import DuplicateKeyError, NullValueError, DatastoreOperationError
 from typing import List, Dict, Any, Iterator, Optional
 import logging
 
@@ -16,87 +18,154 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
         self.engine = self.connection.get_engine()
         self.session_factory = self.connection.get_session_factory()
         self.base = automap_base()
-
-    def validate_keys(self, table_name: str, table_info_keys: List[str]):
-        """Validate that table_info.keys match the table's primary keys."""
         self.base.prepare(autoload_with=self.engine)
+
+    def get_reflected_keys(self, table_name: str) -> List[str]:
         try:
-            table_obj = self.base.classes[table_name]
-            table = table_obj.__table__
-            db_keys = [col.name for col in table.primary_key]
-            if not db_keys:
-                return
-            if set(db_keys) != set(table_info_keys):
-                raise ValueError(
-                    f"Table {table_name} primary keys {db_keys} do not match TableInfo keys {table_info_keys}"
-                )
+            table = self.base.classes[table_name].__table__
+            return [col.name for col in table.primary_key]
         except KeyError as e:
-            logger.warning(f"Table {table_name} not found, skipping key validation: {e}")
-            return
+            logger.error(f"Failed to get reflected keys for table {table_name}: {e}")
+            return []
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        self.base.prepare(autoload_with=self.engine)
-        table_obj = self.base.classes[table_name]
-        with self.session_factory() as session:
-            for record in data:
-                obj = table_obj(**record)
-                session.add(obj)
-            session.commit()
+        try:
+            table_obj = self.base.classes[table_name]
+            with self.session_factory() as session:
+                for record in data:
+                    obj = table_obj(**record)
+                    session.add(obj)
+                session.commit()
+        except IntegrityError as e:
+            error_message = str(e.orig).lower()
+            if "duplicate key" in error_message or "unique constraint" in error_message:
+                raise DuplicateKeyError(f"Duplicate key error during insert on {table_name}: {e.orig}")
+            if "not-null constraint" in error_message or "cannot be null" in error_message:
+                raise NullValueError(f"Null value error during insert on {table_name}: {e.orig}")
+            raise DatastoreOperationError(f"Error during insert on {table_name}: {e}")
+        except Exception as e:
+            logger.error(f"Insert failed for table {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during insert on {table_name}: {e}")
 
-    def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        self.base.prepare(autoload_with=self.engine)
-        table_obj = self.base.classes[table_name]
-        with self.session_factory() as session:
-            query = select(table_obj)
-            for key, value in filters.items():
-                query = query.where(getattr(table_obj, key) == value)
-            records = session.execute(query).scalars().all()
-            return [{key: getattr(record, key) for key in record.__dict__.keys() if not key.startswith('_')} for record in records]
-
-    def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        self.base.prepare(autoload_with=self.engine)
-        table_obj = self.base.classes[table_name]
-        with self.session_factory() as session:
-            query = select(table_obj)
-            for key, value in filters.items():
-                query = query.where(getattr(table_obj, key) == value)
-            result = session.execution_options(yield_per=chunk_size).execute(query)
-            for partition in result.partitions():
-                yield [{key: getattr(record, key) for key in record.__dict__.keys() if not key.startswith('_')} for record in partition]
-
-    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        self.base.prepare(autoload_with=self.engine)
-        table_obj = self.base.classes[table_name]
-        with self.session_factory() as session:
-            for update_data in data:
+    def select(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        try:
+            table_obj = self.base.classes[table_name]
+            with self.session_factory() as session:
                 query = select(table_obj)
-                for key, value in filters.items():
-                    query = query.where(getattr(table_obj, key) == value)
+                if filters:
+                    for key, value in filters.items():
+                        query = query.where(getattr(table_obj, key) == value)
+                records = session.execute(query).scalars().all()
+                return [{key: getattr(record, key) for key in record.__dict__.keys() if not key.startswith('_')} for record in records]
+        except Exception as e:
+            logger.error(f"Select failed for table {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during select on {table_name}: {e}")
+
+    def select_chunks(self, table_name: str, filters: Optional[Dict[str, Any]] = None, chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
+        try:
+            table_obj = self.base.classes[table_name]
+            with self.session_factory() as session:
+                query = select(table_obj)
+                if filters:
+                    for key, value in filters.items():
+                        query = query.where(getattr(table_obj, key) == value)
+                result = session.execution_options(yield_per=chunk_size).execute(query)
+                for partition in result.partitions():
+                    yield [{key: getattr(record, key) for key in record.__dict__.keys() if not key.startswith('_')} for record in partition]
+        except Exception as e:
+            logger.error(f"Select chunks failed for table {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during select_chunks on {table_name}: {e}")
+
+    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None):
+        try:
+            table_obj = self.base.classes[table_name]
+            with self.session_factory() as session:
+                query = select(table_obj)
+                if filters:
+                    for key, value in filters.items():
+                        query = query.where(getattr(table_obj, key) == value)
                 records = session.execute(query).scalars().all()
                 for record in records:
-                    for key, value in update_data.items():
-                        setattr(record, key, value)
-            session.commit()
+                    for update_data in data:
+                        for key, value in update_data.items():
+                            setattr(record, key, value)
+                session.commit()
+        except IntegrityError as e:
+            error_message = str(e.orig).lower()
+            if "duplicate key" in error_message or "unique constraint" in error_message:
+                raise DuplicateKeyError(f"Duplicate key error during update on {table_name}: {e.orig}")
+            if "not-null constraint" in error_message or "cannot be null" in error_message:
+                raise NullValueError(f"Null value error during update on {table_name}: {e.orig}")
+            raise DatastoreOperationError(f"Error during update on {table_name}: {e}")
+        except Exception as e:
+            logger.error(f"Update failed for table {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during update on {table_name}: {e}")
 
-    def delete(self, table_name: str, filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        self.base.prepare(autoload_with=self.engine)
-        table_obj = self.base.classes[table_name]
-        with self.session_factory() as session:
-            query = select(table_obj)
-            for key, value in filters.items():
-                query = query.where(getattr(table_obj, key) == value)
-            records = session.execute(query).scalars().all()
-            for record in records:
-                session.delete(record)
-            session.commit()
+    def delete(self, table_name: str, filters: Optional[Dict[str, Any]] = None):
+        try:
+            table_obj = self.base.classes[table_name]
+            with self.session_factory() as session:
+                query = select(table_obj)
+                if filters:
+                    for key, value in filters.items():
+                        query = query.where(getattr(table_obj, key) == value)
+                records = session.execute(query).scalars().all()
+                for record in records:
+                    session.delete(record)
+                session.commit()
+        except Exception as e:
+            logger.error(f"Delete failed for table {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during delete on {table_name}: {e}")
+
+    def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
+                      updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
+        try:
+            table_obj = self.base.classes[table_name]
+            key_columns = self.get_reflected_keys(table_name)
+            with self.session_factory() as session:
+                # Inserts
+                for record in inserts:
+                    obj = table_obj(**record)
+                    session.add(obj)
+                logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
+
+                # Updates
+                for update_data in updates:
+                    query = select(table_obj)
+                    for key in key_columns:
+                        if key in update_data:
+                            query = query.where(getattr(table_obj, key) == update_data[key])
+                    records = session.execute(query).scalars().all()
+                    for record in records:
+                        for key, value in update_data.items():
+                            if key not in key_columns:
+                                setattr(record, key, value)
+                logger.debug(f"Applied {len(updates)} updates to {table_name}")
+
+                # Deletes
+                for delete_data in deletes:
+                    query = select(table_obj)
+                    for key in key_columns:
+                        if key in delete_data:
+                            query = query.where(getattr(table_obj, key) == delete_data[key])
+                    records = session.execute(query).scalars().all()
+                    for record in records:
+                        session.delete(record)
+                logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
+
+                session.commit()
+        except IntegrityError as e:
+            error_message = str(e.orig).lower()
+            if "duplicate key" in error_message or "unique constraint" in error_message:
+                raise DuplicateKeyError(f"Duplicate key error during apply_changes on {table_name}: {e.orig}")
+            if "not-null constraint" in error_message or "cannot be null" in error_message:
+                raise NullValueError(f"Null value error during apply_changes on {table_name}: {e.orig}")
+            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to apply changes to {table_name}: {e}")
+            raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Execute a raw SQL query and return results."""
         try:
             with self.session_factory() as session:
                 result = session.execute(text(sql), parameters or {})
@@ -104,12 +173,18 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
                     return [dict(row._mapping) for row in result.fetchall()]
                 session.commit()
                 return []
+        except IntegrityError as e:
+            error_message = str(e.orig).lower()
+            if "duplicate key" in error_message or "unique constraint" in error_message:
+                raise DuplicateKeyError(f"Duplicate key error during execute_sql: {e.orig}")
+            if "not-null constraint" in error_message or "cannot be null" in error_message:
+                raise NullValueError(f"Null value error during execute_sql: {e.orig}")
+            raise DatastoreOperationError(f"Error during execute_sql: {e}")
         except Exception as e:
             logger.error(f"Failed to execute SQL: {sql}, error: {e}")
-            raise
+            raise DatastoreOperationError(f"Error during execute_sql: {e}")
 
     def list_tables(self, schema: str) -> List[str]:
-        """List tables in the given schema."""
         try:
             inspector = inspect(self.engine)
             return inspector.get_table_names(schema=schema)
@@ -118,7 +193,6 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
             return []
 
     def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
-        """Get metadata for all tables in the schema."""
         try:
             inspector = inspect(self.engine)
             metadata = {}
