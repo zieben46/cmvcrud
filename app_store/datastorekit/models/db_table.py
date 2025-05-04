@@ -13,6 +13,7 @@ class DBTable:
         self.keys = table_info.keys.split(",") if table_info.keys else []
         self.scd_type = table_info.scd_type
         self.scd_handler = self._get_scd_handler()
+        self.columns = self.adapter.get_table_columns(self.table_name, schema_name=self.adapter.profile.schema)
         self._validate_keys()
 
     def _validate_keys(self):

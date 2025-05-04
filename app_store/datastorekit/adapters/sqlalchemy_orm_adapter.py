@@ -3,6 +3,7 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.automap import automap_base
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.types import Integer, String, Float, DateTime, Boolean
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.connection import DatastoreConnection
 from datastorekit.exceptions import DuplicateKeyError, NullValueError, DatastoreOperationError
@@ -18,18 +19,52 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
         self.engine = self.connection.get_engine()
         self.session_factory = self.connection.get_session_factory()
         self.base = automap_base()
-        self.base.prepare(autoload_with=self.engine)
+        self.metadata = self.base.metadata
 
     def get_reflected_keys(self, table_name: str) -> List[str]:
         try:
+            self.base.prepare(autoload_with=self.engine)
             table = self.base.classes[table_name].__table__
             return [col.name for col in table.primary_key]
         except KeyError as e:
             logger.error(f"Failed to get reflected keys for table {table_name}: {e}")
             return []
 
+    def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
+        """Create a table with the given schema."""
+        try:
+            type_map = {
+                "Integer": Integer,
+                "String": String,
+                "Float": Float,
+                "DateTime": DateTime,
+                "Boolean": Boolean
+            }
+            columns = [
+                Column(col_name, type_map.get(col_type, String), primary_key=col_name in ["unique_id", "secondary_key"])
+                for col_name, col_type in schema.items()
+            ]
+            Table(table_name, self.metadata, *columns, schema=schema_name or self.profile.schema or "public")
+            self.metadata.create_all(self.engine)
+            self.base.prepare(autoload_with=self.engine)  # Refresh ORM mappings
+            logger.info(f"Created table {schema_name or self.profile.schema}.{table_name}")
+        except Exception as e:
+            logger.error(f"Failed to create table {table_name}: {e}")
+            raise DatastoreOperationError(f"Failed to create table {table_name}: {e}")
+
+    def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
+        """Get column names and types for a table."""
+        try:
+            inspector = inspect(self.engine)
+            columns = inspector.get_columns(table_name, schema=schema_name or self.profile.schema or "public")
+            return {col["name"]: str(col["type"]) for col in columns}
+        except Exception as e:
+            logger.error(f"Failed to get columns for table {table_name}: {e}")
+            return {}
+
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
         try:
+            self.base.prepare(autoload_with=self.engine)
             table_obj = self.base.classes[table_name]
             with self.session_factory() as session:
                 for record in data:
@@ -49,6 +84,7 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
 
     def select(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         try:
+            self.base.prepare(autoload_with=self.engine)
             table_obj = self.base.classes[table_name]
             with self.session_factory() as session:
                 query = select(table_obj)
@@ -63,6 +99,7 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
 
     def select_chunks(self, table_name: str, filters: Optional[Dict[str, Any]] = None, chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
         try:
+            self.base.prepare(autoload_with=self.engine)
             table_obj = self.base.classes[table_name]
             with self.session_factory() as session:
                 query = select(table_obj)
@@ -78,6 +115,7 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
 
     def update(self, table_name: str, data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None):
         try:
+            self.base.prepare(autoload_with=self.engine)
             table_obj = self.base.classes[table_name]
             with self.session_factory() as session:
                 query = select(table_obj)
@@ -103,6 +141,7 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
 
     def delete(self, table_name: str, filters: Optional[Dict[str, Any]] = None):
         try:
+            self.base.prepare(autoload_with=self.engine)
             table_obj = self.base.classes[table_name]
             with self.session_factory() as session:
                 query = select(table_obj)
@@ -120,6 +159,7 @@ class SQLAlchemyORMAdapter(DatastoreAdapter):
     def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
                       updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
         try:
+            self.base.prepare(autoload_with=self.engine)
             table_obj = self.base.classes[table_name]
             key_columns = self.get_reflected_keys(table_name)
             with self.session_factory() as session:

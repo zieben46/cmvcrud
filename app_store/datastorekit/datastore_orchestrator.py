@@ -1,6 +1,5 @@
 # datastorekit/orchestrator.py
 from typing import Dict, List, Optional, Union
-from sqlalchemy import Table, MetaData, Column, Integer, String, Float, DateTime, Boolean
 from sqlalchemy.sql import text
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.models.db_table import DBTable
@@ -11,7 +10,6 @@ from datastorekit.exceptions import DatastoreOperationError
 import pandas as pd
 import logging
 import os
-from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
@@ -91,73 +89,74 @@ class DataStoreOrchestrator:
                 table_name=source_table_name, 
                 keys=source_adapter.profile.keys, 
                 scd_type="type1", 
-                datastore_key=source_key,
-                columns={}
+                datastore_key=source_key
             )
             target_table_info = TableInfo(
                 table_name=target_table_name, 
                 keys=target_adapter.profile.keys,
                 scd_type="type1", 
-                datastore_key=target_key,
-                columns={}
+                datastore_key=target_key
             )
             source_table = DBTable(source_adapter, source_table_info)
             target_table = DBTable(target_adapter, target_table_info)
 
-            table_exists = target_table.table_name in self.list_tables(target_db, target_schema)
-            source_schema = source_adapter.get_table_metadata(source_schema or "public").get(source_table.table_name, {})
-            target_schema = target_adapter.get_table_metadata(target_schema or "public").get(target_table.table_name, {}) if table_exists else {}
-            schema_changed = table_exists and source_schema.get("columns", {}) != target_schema.get("columns", {})
+            table_exists = target_table_name in self.list_tables(target_db, target_schema)
+            source_columns = source_adapter.get_table_columns(source_table_name, source_schema or "default")
+            target_columns = target_adapter.get_table_columns(target_table_name, target_schema or "default") if table_exists else {}
+            schema_changed = table_exists and source_columns != target_columns
 
             if not table_exists or schema_changed:
                 if table_exists:
-                    logger.info(f"Schema changed for {target_schema}.{target_table.table_name}. Dropping and recreating table.")
+                    logger.info(f"Schema changed for {target_schema}.{target_table_name}. Dropping and recreating table.")
                     if isinstance(target_adapter, (SQLAlchemyCoreAdapter, SQLAlchemyORMAdapter)):
                         with target_adapter.engine.connect() as conn:
-                            conn.execute(text(f"DROP TABLE {target_schema}.{target_table.table_name}"))
+                            conn.execute(text(f"DROP TABLE {target_schema}.{target_table_name}"))
                             conn.commit()
                     elif isinstance(target_adapter, MongoDBAdapter):
-                        target_adapter.db[target_table.table_name].drop()
+                        target_adapter.db[target_table_name].drop()
                     elif isinstance(target_adapter, SparkAdapter):
-                        target_adapter.spark.sql(f"DROP TABLE {target_table.table_name}")
+                        target_adapter.spark.sql(f"DROP TABLE {target_schema}.{target_table_name}")
                     elif isinstance(target_adapter, CSVAdapter):
-                        if os.path.exists(target_adapter.file_path):
-                            os.remove(target_adapter.file_path)
+                        file_path = target_adapter._get_file_path(target_table_name)
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                    elif isinstance(target_adapter, InMemoryAdapter):
+                        target_adapter.data.pop(target_table_name, None)
                     else:
                         raise ValueError(f"Unsupported adapter for dropping table: {type(target_adapter)}")
 
-                logger.info(f"Creating target table {target_schema}.{target_table.table_name}...")
+                logger.info(f"Creating target table {target_schema}.{target_table_name}...")
                 self._create_target_table(target_adapter, target_db, target_schema, target_table, source_table)
 
                 source_data = source_table.read(filters)
                 if not source_data:
-                    logger.info(f"No data to insert into {target_schema}.{target_table.table_name}")
+                    logger.info(f"No data to insert into {target_schema}.{target_table_name}")
                     return
 
                 if chunk_size:
                     source_df = pd.DataFrame(source_data)
                     for i in range(0, len(source_df), chunk_size):
                         chunk = source_df.iloc[i:i + chunk_size].to_dict("records")
-                        target_adapter.apply_changes(target_table.table_name, inserts=chunk, updates=[], deletes=[])
+                        target_adapter.apply_changes(target_table_name, inserts=chunk, updates=[], deletes=[])
                         logger.debug(f"Inserted chunk {i // chunk_size + 1} with {len(chunk)} records")
                 else:
-                    target_adapter.apply_changes(target_table.table_name, inserts=source_data, updates=[], deletes=[])
+                    target_adapter.apply_changes(target_table_name, inserts=source_data, updates=[], deletes=[])
                     logger.debug(f"Inserted {len(source_data)} records")
 
             else:
-                logger.info(f"Schema unchanged for {target_schema}.{target_table.table_name}. Applying changes.")
+                logger.info(f"Schema unchanged for {target_schema}.{target_table_name}. Applying changes.")
                 source_data = source_table.read(filters)
-                target_data = target_table.read({})
+                target_data = target_table.read()
                 source_df = pd.DataFrame(source_data)
                 target_df = pd.DataFrame(target_data)
-                self.process_changes(target_adapter, target_table.table_name, source_df, target_df, chunk_size=chunk_size)
+                self.process_changes(target_adapter, target_table_name, source_df, target_df, chunk_size=chunk_size)
 
-            print(f"Synchronized {source_db}:{source_schema}.{source_table} "
-                  f"to {target_db}:{target_schema}.{target_table}")
+            print(f"Synchronized {source_db}:{source_schema}.{source_table_name} "
+                  f"to {target_db}:{target_schema}.{target_table_name}")
 
         except Exception as e:
-            logger.error(f"Table synchronization failed from {source_db}:{source_schema}.{source_table} "
-                         f"to {target_db}:{target_schema}.{target_table}: {e}")
+            logger.error(f"Table synchronization failed from {source_db}:{source_schema}.{source_table_name} "
+                         f"to {target_db}:{target_schema}.{target_table_name}: {e}")
             raise DatastoreOperationError(f"Table synchronization failed: {e}")
 
     def list_adapters(self) -> List[str]:
@@ -171,14 +170,23 @@ class DataStoreOrchestrator:
             raise KeyError(f"No datastore found for key: {key}")
         if include_metadata:
             return self.get_table_metadata(db_name, schema)
-        return self.adapters[key].list_tables(schema or "public")
+        return self.adapters[key].list_tables(schema or "default")
 
     def get_table_metadata(self, db_name: str, schema: str) -> Dict[str, Dict]:
         """Get metadata for all tables in a datastore."""
         key = f"{db_name}:{schema or 'default'}"
         if key not in self.adapters:
             raise KeyError(f"No datastore found for key: {key}")
-        return self.adapters[key].get_table_metadata(schema or "public")
+        adapter = self.adapters[key]
+        metadata = {}
+        for table_name in adapter.list_tables(schema or "default"):
+            columns = adapter.get_table_columns(table_name, schema)
+            pk_columns = adapter.get_reflected_keys(table_name)
+            metadata[table_name] = {
+                "columns": columns,
+                "primary_keys": pk_columns
+            }
+        return metadata
 
     def query(self, db_name: str, schema: str, query_str: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a raw query on a specific datastore."""
@@ -196,52 +204,21 @@ class DataStoreOrchestrator:
         return DBTable(adapter, table_info)
 
     def _create_target_table(self, target_adapter: DatastoreAdapter, target_db: str, target_schema: str, target_table: DBTable, source_table: DBTable):
+        """Create target table using source table's schema."""
         try:
-            sample_data = source_table.read()
-            schema = target_table.table_info.columns if target_table.table_info.columns else {}
-            if not sample_data and not schema:
-                schema = {
-                    "category": String,
-                    "amount": Float,
-                    "start_date": DateTime,
-                    "end_date": DateTime,
-                    "is_active": Boolean
+            source_columns = source_table.columns
+            if not source_columns:
+                # Fallback schema if no columns exist
+                source_columns = {
+                    "unique_id": "Integer",
+                    "secondary_key": "String",
+                    "category": "String",
+                    "amount": "Float",
+                    "start_date": "DateTime",
+                    "end_date": "DateTime",
+                    "is_active": "Boolean"
                 }
-            elif sample_data:
-                sample_record = sample_data[0]
-                for key, value in sample_record.items():
-                    if key not in schema:
-                        if isinstance(value, str):
-                            schema[key] = String
-                        elif isinstance(value, float):
-                            schema[key] = Float
-                        elif isinstance(value, bool):
-                            schema[key] = Boolean
-                        elif isinstance(value, (datetime, date)):
-                            schema[key] = DateTime
-                        else:
-                            schema[key] = String
-
-            if isinstance(target_adapter, (SQLAlchemyORMAdapter, SQLAlchemyCoreAdapter)):
-                metadata = MetaData()
-                columns = [
-                    Column(col_name, col_type, primary_key=col_name in (target_table.keys or target_adapter.get_reflected_keys(target_table.table_name)))
-                    for col_name, col_type in schema.items()
-                ]
-                Table(target_table.table_name, metadata, *columns, schema=target_schema or None if target_adapter.profile.db_type == "sqlite" else "public")
-                metadata.create_all(target_adapter.engine)
-                print(f"Created SQL table {target_schema}.{target_table.table_name}")
-            elif isinstance(target_adapter, MongoDBAdapter):
-                print(f"MongoDB collection {target_table.table_name} will be created on first insert")
-            elif isinstance(target_adapter, CSVAdapter):
-                print(f"CSV file for {target_table.table_name} will be created on first insert")
-            elif isinstance(target_adapter, SparkAdapter):
-                print(f"Delta table {target_table.table_name} will be created on first insert")
-            elif isinstance(target_adapter, InMemoryAdapter):
-                if target_table.table_name not in target_adapter.data:
-                    target_adapter.data[target_table.table_name] = []
-                print(f"In-memory table {target_table.table_name} initialized")
-            else:
-                raise ValueError(f"Unsupported adapter type: {type(target_adapter)}")
+            target_adapter.create_table(target_table.table_name, source_columns, target_schema)
+            print(f"Created table {target_schema}.{target_table.table_name}")
         except Exception as e:
             raise ValueError(f"Failed to create target table {target_schema}.{target_table.table_name}: {e}")

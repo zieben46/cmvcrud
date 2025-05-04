@@ -17,13 +17,13 @@ from datetime import datetime
 
 # Common schema and test data
 schema = {
-    "unique_id": Integer,
-    "secondary_key": String,
-    "category": String,
-    "amount": Float,
-    "start_date": DateTime,
-    "end_date": DateTime,
-    "is_active": Boolean
+    "unique_id": "Integer",
+    "secondary_key": "String",
+    "category": "String",
+    "amount": "Float",
+    "start_date": "DateTime",
+    "end_date": "DateTime",
+    "is_active": "Boolean"
 }
 test_data = [
     {"unique_id": 1, "secondary_key": "A", "category": "Food", "amount": 50.0, "start_date": "2023-01-01", "end_date": None, "is_active": True},
@@ -91,7 +91,7 @@ def test_sync_tables_across_datastores():
 
         # Test schema change
         updated_schema = schema.copy()
-        updated_schema["new_column"] = String
+        updated_schema["new_column"] = "String"
         updated_data = [dict(record, new_column=f"Test{record['unique_id']}") for record in test_data]
         dsl.create_table(source_table_name, updated_schema, key=None) \
            .setup_data(updated_data)
@@ -180,13 +180,13 @@ def test_sync_tables_duplicate_key_error():
     target_driver = PostgresDriver(orchestrator, "spend_plan_db:safe_user")
 
     schema = {
-        "unique_id": Integer,
-        "secondary_key": String,
-        "category": String,
-        "amount": Float,
-        "start_date": DateTime,
-        "end_date": DateTime,
-        "is_active": Boolean
+        "unique_id": "Integer",
+        "secondary_key": "String",
+        "category": "String",
+        "amount": "Float",
+        "start_date": "DateTime",
+        "end_date": "DateTime",
+        "is_active": "Boolean"
     }
     test_data = [
         {"unique_id": 1, "secondary_key": "A", "category": "Food", "amount": 50.0, "start_date": "2023-01-01", "end_date": None, "is_active": True},
@@ -222,13 +222,13 @@ def test_sync_tables_null_value_error():
     target_driver = PostgresDriver(orchestrator, "spend_plan_db:safe_user")
 
     schema = {
-        "unique_id": Integer,
-        "secondary_key": String,
-        "category": String,
-        "amount": Float,
-        "start_date": DateTime,
-        "end_date": DateTime,
-        "is_active": Boolean
+        "unique_id": "Integer",
+        "secondary_key": "String",
+        "category": "String",
+        "amount": "Float",
+        "start_date": "DateTime",
+        "end_date": "DateTime",
+        "is_active": "Boolean"
     }
     test_data = [
         {"unique_id": 1, "secondary_key": "A", "category": None, "amount": 50.0, "start_date": "2023-01-01", "end_date": None, "is_active": True}

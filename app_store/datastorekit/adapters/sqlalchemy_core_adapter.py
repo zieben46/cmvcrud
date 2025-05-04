@@ -1,7 +1,8 @@
 # datastorekit/adapters/sqlalchemy_core_adapter.py
-from sqlalchemy import Table, MetaData, select, insert, update, delete, inspect
+from sqlalchemy import Table, MetaData, select, insert, update, delete, inspect, Column
 from sqlalchemy.sql import and_, text, or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.types import Integer, String, Float, DateTime, Boolean
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.connection import DatastoreConnection
 from datastorekit.exceptions import DuplicateKeyError, NullValueError, DatastoreOperationError
@@ -34,6 +35,37 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
         except Exception as e:
             logger.error(f"Failed to get reflected keys for table {table_name}: {e}")
             return []
+
+    def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
+        """Create a table with the given schema."""
+        try:
+            type_map = {
+                "Integer": Integer,
+                "String": String,
+                "Float": Float,
+                "DateTime": DateTime,
+                "Boolean": Boolean
+            }
+            columns = [
+                Column(col_name, type_map.get(col_type, String), primary_key=col_name in ["unique_id", "secondary_key"])
+                for col_name, col_type in schema.items()
+            ]
+            table = Table(table_name, self.metadata, *columns, schema=schema_name or self.profile.schema or "public")
+            self.metadata.create_all(self.engine)
+            logger.info(f"Created table {schema_name or self.profile.schema}.{table_name}")
+        except Exception as e:
+            logger.error(f"Failed to create table {table_name}: {e}")
+            raise DatastoreOperationError(f"Failed to create table {table_name}: {e}")
+
+    def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
+        """Get column names and types for a table."""
+        try:
+            inspector = inspect(self.engine)
+            columns = inspector.get_columns(table_name, schema=schema_name or self.profile.schema or "public")
+            return {col["name"]: str(col["type"]) for col in columns}
+        except Exception as e:
+            logger.error(f"Failed to get columns for table {table_name}: {e}")
+            return {}
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
         table = Table(table_name, self.metadata, autoload_with=self.engine)

@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from datastorekit.orchestrator import DataStoreOrchestrator
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
-from datastorekit.exceptions import DatastoreOperationError, DuplicateKeyError, NullValueError
+from datastorekit.exceptions import DatastoreOperationError
 import logging
 from datetime import datetime
 
@@ -27,44 +27,19 @@ class DatabricksToPostgresReplicator:
                 table_name=source_table,
                 keys=None,
                 scd_type="type2",
-                datastore_key=f"{self.source_db}:{self.source_schema}",
-                columns={
-                    "unique_id": "Integer",
-                    "secondary_key": "String",
-                    "category": "String",
-                    "amount": "Float",
-                    "start_date": "DateTime",
-                    "end_date": "DateTime",
-                    "is_active": "Boolean"
-                }
+                datastore_key=f"{self.source_db}:{self.source_schema}"
             )
             target_table_info = TableInfo(
                 table_name=target_table,
                 keys=None,
                 scd_type="type2",
-                datastore_key=f"{self.target_db}:{self.target_schema}",
-                columns={
-                    "unique_id": "Integer",
-                    "secondary_key": "String",
-                    "category": "String",
-                    "amount": "Float",
-                    "start_date": "DateTime",
-                    "end_date": "DateTime",
-                    "is_active": "Boolean"
-                }
+                datastore_key=f"{self.target_db}:{self.target_schema}"
             )
             history_table_info = TableInfo(
                 table_name=history_table,
                 keys="version",
                 scd_type="type0",
-                datastore_key=f"{self.target_db}:{self.target_schema}",
-                columns={
-                    "version": "Integer",
-                    "timestamp": "DateTime",
-                    "operation": "String",
-                    "operation_parameters": "String",
-                    "num_affected_rows": "BigInteger"
-                }
+                datastore_key=f"{self.target_db}:{self.target_schema}"
             )
 
             source_table = self.orchestrator.get_table(f"{self.source_db}:{self.source_schema}", source_table_info)
@@ -222,16 +197,14 @@ class DatabricksToPostgresReplicator:
         target_tables = self.orchestrator.list_tables(self.target_db, self.target_schema)
         if history_table.table_name not in target_tables:
             logger.info(f"History table {history_table.table_name} does not exist. Initializing...")
-            metadata = MetaData()
-            columns = [
-                Column("version", Integer, primary_key=True),
-                Column("timestamp", DateTime),
-                Column("operation", String),
-                Column("operation_parameters", String),
-                Column("num_affected_rows", BigInteger)
-            ]
-            Table(history_table.table_name, metadata, *columns, schema=self.target_schema)
-            metadata.create_all(history_table.adapter.engine)
+            history_schema = {
+                "version": "Integer",
+                "timestamp": "DateTime",
+                "operation": "String",
+                "operation_parameters": "String",
+                "num_affected_rows": "BigInteger"
+            }
+            history_table.adapter.create_table(history_table.table_name, history_schema, self.target_schema)
             logger.info(f"Initialized PostgreSQL history table {self.target_schema}.{history_table.table_name}")
 
         history_table.create(history_data)

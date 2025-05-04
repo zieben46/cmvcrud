@@ -13,8 +13,27 @@ class InMemoryAdapter(DatastoreAdapter):
         self.data = {}  # {table_name: List[Dict]}
 
     def get_reflected_keys(self, table_name: str) -> List[str]:
-        """Return an empty list as in-memory tables have no inherent primary keys."""
         return []
+
+    def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
+        """Initialize an in-memory table."""
+        try:
+            self.data[table_name] = []
+            logger.info(f"Created in-memory table {table_name} with schema {schema}")
+        except Exception as e:
+            logger.error(f"Failed to create table {table_name}: {e}")
+            raise DatastoreOperationError(f"Failed to create table {table_name}: {e}")
+
+    def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
+        """Get column names and types from in-memory table data."""
+        try:
+            if table_name not in self.data or not self.data[table_name]:
+                return {}
+            sample_record = self.data[table_name][0]
+            return {key: type(value).__name__ for key, value in sample_record.items()}
+        except Exception as e:
+            logger.error(f"Failed to get columns for table {table_name}: {e}")
+            return {}
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
         try:
@@ -116,11 +135,10 @@ class InMemoryAdapter(DatastoreAdapter):
     def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
         metadata = {}
         for table_name in self.data:
-            if self.data[table_name]:
-                columns = {key: str(type(value).__name__) for key, value in self.data[table_name][0].items()}
-                pk_columns = self.profile.keys.split(",") if self.profile.keys else []
-                metadata[table_name] = {
-                    "columns": columns,
-                    "primary_keys": pk_columns
-                }
+            columns = self.get_table_columns(table_name)
+            pk_columns = self.profile.keys.split(",") if self.profile.keys else []
+            metadata[table_name] = {
+                "columns": columns,
+                "primary_keys": pk_columns
+            }
         return metadata

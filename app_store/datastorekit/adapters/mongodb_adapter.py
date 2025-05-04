@@ -1,8 +1,8 @@
-from pymongo import MongoClient
-from typing import Dict, Any, List, Iterator, Optional
-from bson import json_util
-import json
+# datastorekit/adapters/mongodb_adapter.py
+from pymongo.errors import DuplicateKeyError as MongoDuplicateKeyError
 from datastorekit.adapters.base import DatastoreAdapter
+from datastorekit.exceptions import DuplicateKeyError, DatastoreOperationError
+from typing import List, Dict, Any, Iterator, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,23 +10,28 @@ logger = logging.getLogger(__name__)
 class MongoDBAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
         super().__init__(profile)
-        client = MongoClient(profile.connection_string)
-        self.db = client[profile.dbname]
+        self.connection = DatastoreConnection(profile)
+        self.client = self.connection.get_mongo_client()
+        self.db = self.client[profile.dbname]
 
     def get_reflected_keys(self, table_name: str) -> List[str]:
-        """MongoDB uses '_id' as the default key unless overridden."""
-        return ["_id"]  # Default for MongoDB collection
+        return ["_id"]
 
-    def validate_keys(self, table_name: str, table_info_keys: List[str]):
-        """Validate that table_info.keys are present in the collection."""
-        collection = self.db[table_name]
-        sample_doc = collection.find_one()
-        if sample_doc:
-            doc_keys = set(sample_doc.keys())
-            if not all(key in doc_keys for key in table_info_keys):
-                raise ValueError(
-                    f"Collection {table_name} keys {doc_keys} do not include all TableInfo keys {table_info_keys}"
-                )
+    def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
+        """MongoDB collections are created on first insert, no action needed."""
+        logger.info(f"MongoDB collection {table_name} will be created on first insert with schema {schema}")
+
+    def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
+        """Infer column names and types from collection data."""
+        try:
+            collection = self.db[table_name]
+            sample_doc = collection.find_one()
+            if not sample_doc:
+                return {}
+            return {k: type(v).__name__ for k, v in sample_doc.items() if k != "_id"}
+        except Exception as e:
+            logger.error(f"Failed to get columns for collection {table_name}: {e}")
+            return {}
 
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
         try:
@@ -44,13 +49,13 @@ class MongoDBAdapter(DatastoreAdapter):
         query = filters or {}
         return list(collection.find(query))
 
-    def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        self.validate_keys(table_name, self.table_info.keys.split(","))
+    def select_chunks(self, table_name: str, filters: Optional[Dict[str, Any]] = None, chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
         collection = self.db[table_name]
-        cursor = collection.find(filters).batch_size(chunk_size)
+        query = filters or {}
+        cursor = collection.find(query).batch_size(chunk_size)
         chunk = []
-        for record in cursor:
-            chunk.append(json.loads(json_util.dumps(record)))
+        for doc in cursor:
+            chunk.append(doc)
             if len(chunk) >= chunk_size:
                 yield chunk
                 chunk = []
@@ -75,36 +80,6 @@ class MongoDBAdapter(DatastoreAdapter):
         except Exception as e:
             logger.error(f"Delete failed for {table_name}: {e}")
             raise DatastoreOperationError(f"Error during delete on {table_name}: {e}")
-
-    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Execute a raw SQL query (not supported for MongoDB). Use MongoDB query syntax instead."""
-        raise NotImplementedError("SQL execution is not supported for MongoDBAdapter")
-
-    def list_tables(self, schema: str) -> List[str]:
-        """List collections in the MongoDB database."""
-        try:
-            return self.db.list_collection_names()
-        except Exception as e:
-            logger.error(f"Failed to list collections: {e}")
-            return []
-
-    def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
-        """Get metadata for all collections in the MongoDB database."""
-        metadata = {}
-        for collection_name in self.list_tables(schema):
-            collection = self.db[collection_name]
-            sample_doc = collection.find_one()
-            if sample_doc:
-                columns = {key: str(type(value).__name__) for key, value in sample_doc.items()}
-                pk_columns = self.table_info.keys.split(",") if self.table_info else ["_id"]
-                metadata[collection_name] = {
-                    "columns": columns,
-                    "primary_keys": pk_columns
-                }
-        return metadata
-    
-
-    from pymongo import ClientSession
 
     def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
                       updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
@@ -134,3 +109,23 @@ class MongoDBAdapter(DatastoreAdapter):
         except Exception as e:
             logger.error(f"Failed to apply changes to {table_name}: {e}")
             raise DatastoreOperationError(f"Error during apply_changes on {table_name}: {e}")
+
+    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        raise NotImplementedError("SQL execution is not supported for MongoDBAdapter")
+
+    def list_tables(self, schema: str) -> List[str]:
+        try:
+            return self.db.list_collection_names()
+        except Exception as e:
+            logger.error(f"Failed to list collections: {e}")
+            return []
+
+    def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
+        metadata = {}
+        for table_name in self.list_tables(schema):
+            columns = self.get_table_columns(table_name)
+            metadata[table_name] = {
+                "columns": columns,
+                "primary_keys": ["_id"]
+            }
+        return metadata

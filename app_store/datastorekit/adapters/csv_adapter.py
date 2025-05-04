@@ -20,6 +20,36 @@ class CSVAdapter(DatastoreAdapter):
     def get_reflected_keys(self, table_name: str) -> List[str]:
         return []
 
+    def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
+        """Create a CSV file with the given schema."""
+        try:
+            file_path = self._get_file_path(table_name)
+            df = pd.DataFrame(columns=schema.keys())
+            df.to_csv(file_path, index=False)
+            logger.info(f"Created CSV file {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to create table {table_name}: {e}")
+            raise DatastoreOperationError(f"Failed to create table {table_name}: {e}")
+
+    def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
+        """Get column names and types from CSV file."""
+        try:
+            file_path = self._get_file_path(table_name)
+            if not os.path.exists(file_path):
+                return {}
+            df = pd.read_csv(file_path, nrows=1)
+            type_map = {
+                "int64": "INTEGER",
+                "object": "STRING",
+                "float64": "FLOAT",
+                "datetime64[ns]": "TIMESTAMP",
+                "bool": "BOOLEAN"
+            }
+            return {col: type_map.get(str(df[col].dtype), "STRING") for col in df.columns}
+        except Exception as e:
+            logger.error(f"Failed to get columns for table {table_name}: {e}")
+            return {}
+
     def insert(self, table_name: str, data: List[Dict[str, Any]]):
         file_path = self._get_file_path(table_name)
         try:
@@ -139,13 +169,10 @@ class CSVAdapter(DatastoreAdapter):
     def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
         metadata = {}
         for table_name in self.list_tables(schema):
-            file_path = self._get_file_path(table_name)
-            if os.path.exists(file_path):
-                df = pd.read_csv(file_path, nrows=1)
-                columns = {col: str(df[col].dtype) for col in df.columns}
-                pk_columns = self.profile.keys.split(",") if self.profile.keys else []
-                metadata[table_name] = {
-                    "columns": columns,
-                    "primary_keys": pk_columns
-                }
+            columns = self.get_table_columns(table_name)
+            pk_columns = self.profile.keys.split(",") if self.profile.keys else []
+            metadata[table_name] = {
+                "columns": columns,
+                "primary_keys": pk_columns
+            }
         return metadata
