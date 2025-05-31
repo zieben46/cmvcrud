@@ -216,45 +216,45 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
             if created_session:
                 session.close()
 
-def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
-        dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
-        with self.Session() as session:
-            try:
-                inserts = []
-                updates = []
-                deletes = []
+    def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
+            dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
+            with self.Session() as session:
+                try:
+                    inserts = []
+                    updates = []
+                    deletes = []
 
-                for change in changes:
-                    if "operation" not in change:
-                        raise ValueError("Each change dictionary must include an 'operation' key")
-                    operation = change["operation"]
-                    data = {k: v for k, v in change.items() if k != "operation"}
-                    
-                    if operation == "create":
-                        inserts.append(data)
-                    elif operation == "update":
-                        updates.append(data)
-                    elif operation == "delete":
-                        deletes.append(data)
-                    else:
-                        raise ValueError(f"Invalid operation: {operation}")
+                    for change in changes:
+                        if "operation" not in change:
+                            raise ValueError("Each change dictionary must include an 'operation' key")
+                        operation = change["operation"]
+                        data = {k: v for k, v in change.items() if k != "operation"}
+                        
+                        if operation == "create":
+                            inserts.append(data)
+                        elif operation == "update":
+                            updates.append(data)
+                        elif operation == "delete":
+                            deletes.append(data)
+                        else:
+                            raise ValueError(f"Invalid operation: {operation}")
 
-                inserted_count = 0
-                updated_count = 0
-                deleted_count = 0
+                    inserted_count = 0
+                    updated_count = 0
+                    deleted_count = 0
 
-                if inserts:
-                    inserted_count = self._create_records(dbtable, inserts, session)
-                if updates:
-                    updated_count = self._update_records(dbtable, updates, session)
-                if deletes:
-                    deleted_count = self._delete_records(dbtable, deletes, session)
+                    if inserts:
+                        inserted_count = self._create_records(dbtable, inserts, session)
+                    if updates:
+                        updated_count = self._update_records(dbtable, updates, session)
+                    if deletes:
+                        deleted_count = self._delete_records(dbtable, deletes, session)
 
-                session.commit()
-                return [], inserted_count, updated_count, deleted_count
-            except Exception as e:
-                session.rollback()
-                raise Exception(f"Error applying changes to {dbtable.table_name}: {e}")
+                    session.commit()
+                    return [], inserted_count, updated_count, deleted_count
+                except Exception as e:
+                    session.rollback()
+                    raise Exception(f"Error applying changes to {dbtable.table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         try:
