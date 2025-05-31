@@ -1,26 +1,26 @@
 # datastorekit/scd/base.py
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 from datastorekit.adapters.base import DatastoreAdapter
 
 class SCDHandler(ABC):
-    def __init__(self, adapter: DatastoreAdapter, table_name: str, keys: Optional[Union[str, List[str]]] = None):
+    def __init__(self, adapter: DatastoreAdapter, table_name: str, keys: Optional[List[str]] = None):
         self.adapter = adapter
         self.table_name = table_name
-        self.keys = [keys] if isinstance(keys, str) else (keys or [])
+        self.keys = keys or []
 
     @abstractmethod
-    def create(self, data: Union[Dict[str, Any], List[Dict[str, Any]]]):
+    def create(self, records: List[Dict]) -> int:
         pass
 
     @abstractmethod
-    def read(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def read(self, filters: Optional[Dict] = None) -> List[Dict]:
         pass
 
     @abstractmethod
-    def update(self, data: Union[Dict[str, Any], List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None):
+    def update(self, updates: List[Dict]) -> int:
         pass
 
     @abstractmethod
-    def delete(self, filters: Optional[Dict[str, Any]] = None):
+    def delete(self, conditions: List[Dict]) -> int:
         pass
