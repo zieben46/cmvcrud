@@ -55,15 +55,17 @@ class CSVAdapter(DatastoreAdapter):
             return {}
 
     def create(self, table_name: str, records: List[Dict]) -> int:
-        dbtable = DBTable(table_name, self._get_file_path(table_name))
-        try:
-            return self._create_records(dbtable, records)
-        except Exception as e:
-            logger.error(f"Create failed for {table_name}: {e}")
-            raise DatastoreOperationError(f"Error during create on {table_name}: {e}")
+            dbtable = DBTable(table_name, self._get_file_path(table_name))
+            try:
+                return self._create_records(dbtable, records)
+            except Exception as e:
+                logger.error(f"Create failed for {table_name}: {e}")
+                raise DatastoreOperationError(f"Error during create on {table_name}: {e}")
 
     def _create_records(self, dbtable: DBTable, records: List[Dict]) -> int:
         try:
+            if not records:
+                return 0
             current_df = pd.read_csv(dbtable.file_path) if os.path.exists(dbtable.file_path) else pd.DataFrame()
             new_df = pd.concat([current_df, pd.DataFrame(records)], ignore_index=True)
             temp_path = dbtable.file_path + ".tmp"
@@ -200,7 +202,6 @@ class CSVAdapter(DatastoreAdapter):
                 else:
                     raise ValueError(f"Invalid operation: {operation}")
 
-            inserted_ids = []
             inserted_count = 0
             updated_count = 0
             deleted_count = 0
@@ -213,7 +214,7 @@ class CSVAdapter(DatastoreAdapter):
                     raise ValueError("Table must have a primary key for operations.")
 
             if inserts:
-                inserted_ids, inserted_count = self._create_records_with_ids(dbtable, inserts, new_df)
+                inserted_count = self._create_records(dbtable, inserts)
                 new_df = pd.concat([new_df, pd.DataFrame(inserts)], ignore_index=True)
 
             if updates:
@@ -233,31 +234,10 @@ class CSVAdapter(DatastoreAdapter):
             temp_path = dbtable.file_path + ".tmp"
             new_df.to_csv(temp_path, index=False)
             os.replace(temp_path, dbtable.file_path)
-            return inserted_ids, inserted_count, updated_count, deleted_count
+            return [], inserted_count, updated_count, deleted_count
         except Exception as e:
             logger.error(f"Error applying changes to {dbtable.table_name}: {e}")
             raise DatastoreOperationError(f"Error applying changes to {dbtable.table_name}: {e}")
-
-    def _create_records_with_ids(self, dbtable: DBTable, records: List[Dict], current_df: pd.DataFrame) -> Tuple[List[Any], int]:
-        try:
-            primary_keys = self.get_reflected_keys(dbtable.table_name)
-            if not primary_keys:
-                raise ValueError("Table must have a primary key for insert operations.")
-
-            max_id = 0
-            if not current_df.empty and primary_keys[0] in current_df.columns:
-                max_id = current_df[primary_keys[0]].max() if pd.notna(current_df[primary_keys[0]]).any() else 0
-
-            inserted_ids = []
-            for i, record in enumerate(records):
-                if primary_keys[0] not in record:
-                    record[primary_keys[0]] = max_id + i + 1
-                inserted_ids.append(record[primary_keys[0]] if len(primary_keys) == 1 else {pk: record.get(pk) for pk in primary_keys})
-
-            return inserted_ids, len(records)
-        except Exception as e:
-            logger.error(f"Error generating IDs for insert into {dbtable.table_name}: {e}")
-            raise DatastoreOperationError(f"Error generating IDs for insert into {dbtable.table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         raise NotImplementedError("SQL execution is not supported for CSVAdapter")

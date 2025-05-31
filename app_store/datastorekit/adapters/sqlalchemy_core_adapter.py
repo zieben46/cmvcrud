@@ -75,30 +75,26 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
     def create(self, table_name: str, records: List[Dict]) -> int:
         dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
         try:
-            _, rowcount = self._create_records(dbtable, records)
-            return rowcount
+            return self._create_records(dbtable, records)
         except Exception as e:
             self._handle_db_error(e, "create", table_name)
 
-    def _create_records(self, dbtable: DBTable, records: List[Dict], session: Optional[sessionmaker] = None) -> Tuple[List[Any], int]:
+    def _create_records(self, dbtable: DBTable, records: List[Dict], session: Optional[sessionmaker] = None) -> int:
         created_session = False
         if session is None:
             session = self.Session()
             created_session = True
 
         try:
-            primary_keys = [col.name for col in dbtable.table.primary_key]
-            if not primary_keys:
-                raise ValueError("Table must have a primary key for insert operations.")
+            if not records:
+                return 0
 
-            stmt = insert(dbtable.table).values(records).returning(*dbtable.table.primary_key)
+            stmt = insert(dbtable.table).values(records)
             result = session.execute(stmt)
 
             if created_session:
                 session.commit()
-
-            inserted_ids = [row[0] if len(primary_keys) == 1 else dict(row) for row in result.fetchall()]
-            return inserted_ids, result.rowcount
+            return result.rowcount
         except Exception as e:
             if created_session:
                 session.rollback()
@@ -106,7 +102,7 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
         finally:
             if created_session:
                 session.close()
-
+                
     def read(self, table_name: str, filters: Optional[Dict] = None) -> List[Dict]:
         table = Table(table_name, self.metadata, autoload_with=self.engine)
         query = select(table)
@@ -220,7 +216,7 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
             if created_session:
                 session.close()
 
-    def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
+def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
         dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
         with self.Session() as session:
             try:
@@ -243,22 +239,19 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
                     else:
                         raise ValueError(f"Invalid operation: {operation}")
 
-                inserted_ids = []
                 inserted_count = 0
                 updated_count = 0
                 deleted_count = 0
 
                 if inserts:
-                    inserted_ids, inserted_count = self._create_records(dbtable, inserts, session)
-
+                    inserted_count = self._create_records(dbtable, inserts, session)
                 if updates:
                     updated_count = self._update_records(dbtable, updates, session)
-
                 if deletes:
                     deleted_count = self._delete_records(dbtable, deletes, session)
 
                 session.commit()
-                return inserted_ids, inserted_count, updated_count, deleted_count
+                return [], inserted_count, updated_count, deleted_count
             except Exception as e:
                 session.rollback()
                 raise Exception(f"Error applying changes to {dbtable.table_name}: {e}")

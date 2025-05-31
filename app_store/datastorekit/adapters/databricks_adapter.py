@@ -112,7 +112,6 @@ class DatabricksSQLAdapter(DatastoreAdapter):
             return {}
 
     def create(self, table_name: str, records: List[Dict]) -> int:
-        """Insert records into the specified table using SQL."""
         dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
         try:
             if not records:
@@ -126,8 +125,8 @@ class DatabricksSQLAdapter(DatastoreAdapter):
             """
             rowcount = 0
             for record in records:
-                result = self.execute_sql(sql, record)
-                rowcount += 1  # Databricks SQL Connector doesn't return rowcount for INSERT, so we count records
+                self.execute_sql(sql, record)
+                rowcount += 1
             return rowcount
         except Exception as e:
             self._handle_db_error(e, "create", table_name)
@@ -224,9 +223,15 @@ class DatabricksSQLAdapter(DatastoreAdapter):
             self._handle_db_error(e, "delete", table_name)
 
     def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
-        """Apply create, update, and delete operations in one transaction using SQL."""
         dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
         try:
+            if not changes:
+                return [], 0, 0, 0
+
+            primary_keys = self.get_reflected_keys(table_name)
+            if not primary_keys:
+                raise ValueError("Table must have a primary key for apply_changes operations")
+
             inserts = []
             updates = []
             deletes = []
@@ -236,7 +241,7 @@ class DatabricksSQLAdapter(DatastoreAdapter):
                     raise ValueError("Each change dictionary must include an 'operation' key")
                 operation = change["operation"]
                 data = {k: v for k, v in change.items() if k != "operation"}
-
+                
                 if operation == "create":
                     inserts.append(data)
                 elif operation == "update":
@@ -246,31 +251,16 @@ class DatabricksSQLAdapter(DatastoreAdapter):
                 else:
                     raise ValueError(f"Invalid operation: {operation}")
 
-            inserted_ids = []
             inserted_count = 0
             updated_count = 0
             deleted_count = 0
-            primary_keys = self.get_reflected_keys(table_name)
 
             conn = self._get_connection()
             with conn.cursor() as cursor:
                 try:
-                    # Perform inserts
                     if inserts:
-                        columns = list(inserts[0].keys())
-                        placeholders = ", ".join([f":{col}" for col in columns])
-                        columns_str = ", ".join(columns)
-                        sql = f"""
-                            INSERT INTO {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
-                            ({columns_str}) VALUES ({placeholders})
-                            RETURNING {', '.join(primary_keys)}
-                        """
-                        for record in inserts:
-                            cursor.execute(sql, record)
-                            inserted_ids.append(cursor.fetchone()[0] if len(primary_keys) == 1 else dict(zip(primary_keys, cursor.fetchone())))
-                        inserted_count = len(inserts)
+                        inserted_count = self.create(table_name, inserts)
 
-                    # Perform updates
                     if updates:
                         for update_dict in updates:
                             if not all(pk in update_dict for pk in primary_keys):
@@ -283,26 +273,27 @@ class DatabricksSQLAdapter(DatastoreAdapter):
                                 WHERE {where_clause}
                             """
                             cursor.execute(sql, update_dict)
-                            updated_count += 1  # Approximate count
+                            updated_count += 1
 
-                    # Perform deletes
                     if deletes:
                         for cond in deletes:
                             if not cond:
-                                raise ValueError("Condition dictionary cannot be empty.")
+                                raise ValueError("Condition dictionary cannot be empty")
                             where_clause = " AND ".join([f"{key} = :{key}" for key in cond.keys()])
                             sql = f"""
                                 DELETE FROM {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
                                 WHERE {where_clause}
                             """
                             cursor.execute(sql, cond)
-                            deleted_count += 1  # Approximate count
+                            deleted_count += 1
 
                     conn.commit()
-                    return inserted_ids, inserted_count, updated_count, deleted_count
+                    logger.debug(f"Applied {inserted_count} inserts, {updated_count} updates, {deleted_count} deletes to {dbtable.table_name}")
+                    return [], inserted_count, updated_count, deleted_count
                 except Exception as e:
                     conn.rollback()
                     raise
+
         except Exception as e:
             self._handle_db_error(e, "apply_changes", table_name)
 

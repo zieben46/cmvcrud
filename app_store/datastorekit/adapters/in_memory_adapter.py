@@ -55,6 +55,8 @@ class InMemoryAdapter(DatastoreAdapter):
 
     def _create_records(self, dbtable: DBTable, records: List[Dict]) -> int:
         try:
+            if not records:
+                return 0
             if dbtable.table_name not in self.data:
                 self.data[dbtable.table_name] = []
             self.data[dbtable.table_name].extend(copy.deepcopy(records))
@@ -176,7 +178,7 @@ class InMemoryAdapter(DatastoreAdapter):
                     raise ValueError("Each change dictionary must include an 'operation' key")
                 operation = change["operation"]
                 data = {k: v for k, v in change.items() if k != "operation"}
-
+                
                 if operation == "create":
                     inserts.append(data)
                 elif operation == "update":
@@ -186,7 +188,6 @@ class InMemoryAdapter(DatastoreAdapter):
                 else:
                     raise ValueError(f"Invalid operation: {operation}")
 
-            inserted_ids = []
             inserted_count = 0
             updated_count = 0
             deleted_count = 0
@@ -197,7 +198,7 @@ class InMemoryAdapter(DatastoreAdapter):
                     raise ValueError("Table must have a primary key for operations.")
 
             if inserts:
-                inserted_ids, inserted_count = self._create_records_with_ids(dbtable, inserts)
+                inserted_count = self._create_records(dbtable, inserts)
 
             if updates:
                 updated_count = self._update_records(dbtable, updates)
@@ -205,36 +206,10 @@ class InMemoryAdapter(DatastoreAdapter):
             if deletes:
                 deleted_count = self._delete_records(dbtable, deletes)
 
-            return inserted_ids, inserted_count, updated_count, deleted_count
+            return [], inserted_count, updated_count, deleted_count
         except Exception as e:
             logger.error(f"Error applying changes to {dbtable.table_name}: {e}")
             raise DatastoreOperationError(f"Error applying changes to {dbtable.table_name}: {e}")
-
-    def _create_records_with_ids(self, dbtable: DBTable, records: List[Dict]) -> Tuple[List[Any], int]:
-        try:
-            if dbtable.table_name not in self.data:
-                self.data[dbtable.table_name] = []
-
-            primary_keys = self.get_reflected_keys(dbtable.table_name)
-            if not primary_keys:
-                raise ValueError("Table must have a primary key for insert operations.")
-
-            max_id = 0
-            if self.data[dbtable.table_name] and primary_keys[0] in self.data[dbtable.table_name][0]:
-                max_id = max(record.get(primary_keys[0], 0) for record in self.data[dbtable.table_name])
-
-            inserted_ids = []
-            for i, record in enumerate(records):
-                record = copy.deepcopy(record)
-                if primary_keys[0] not in record:
-                    record[primary_keys[0]] = max_id + i + 1
-                self.data[dbtable.table_name].append(record)
-                inserted_ids.append(record[primary_keys[0]] if len(primary_keys) == 1 else {pk: record.get(pk) for pk in primary_keys})
-
-            return inserted_ids, len(records)
-        except Exception as e:
-            logger.error(f"Error generating IDs for insert into {dbtable.table_name}: {e}")
-            raise DatastoreOperationError(f"Error generating IDs for insert into {dbtable.table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         raise NotImplementedError("SQL execution is not supported for InMemoryAdapter")

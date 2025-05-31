@@ -80,8 +80,31 @@ class Type2Handler(SCDHandler):
         try:
             if not conditions:
                 return 0
-            logger.debug(f"Deleting records from {self.table_name} with {len(conditions)} conditions")
-            return self.adapter.delete(self.table_name, conditions)
+
+            changes = []
+            for cond in conditions:
+                if not cond:
+                    raise ValueError("Condition dictionary cannot be empty")
+                
+                # Validate condition columns
+                table_columns = self.adapter.get_table_columns(self.table_name)
+                if not all(key in table_columns for key in cond.keys()):
+                    raise ValueError(f"Invalid column names in conditions: {cond.keys()}")
+
+                # Create update operation to mark record as inactive
+                update_data = {
+                    "operation": "update",
+                    "end_date": datetime.now(),
+                    "is_active": False,
+                    **cond
+                }
+                changes.append(update_data)
+
+            logger.debug(f"Applying {len(changes)} logical delete operations for {self.table_name}")
+            if changes:
+                inserted_ids, inserted_count, updated_count, deleted_count = self.adapter.apply_changes(self.table_name, changes)
+                return updated_count  # Return the number of rows updated (logically deleted)
+            return 0
         except Exception as e:
-            logger.error(f"Failed to delete records from {self.table_name}: {e}")
-            raise DatastoreOperationError(f"Failed to delete records: {e}")
+            logger.error(f"Failed to logically delete records in {self.table_name}: {e}")
+            raise DatastoreOperationError(f"Failed to logically delete records: {e}")

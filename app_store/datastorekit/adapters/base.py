@@ -83,8 +83,8 @@ class DatastoreAdapter(ABC):
                      and data for the operation.
         
         Returns:
-            Tuple of (list of primary key values for inserted records, number of rows inserted,
-                      number of rows updated, number of rows deleted).
+            Tuple of (empty list, number of rows inserted, number of rows updated, number of rows deleted).
+            The first element is an empty list, as primary key values are not retrieved.
         """
         pass
 
