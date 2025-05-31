@@ -1,15 +1,21 @@
 # datastorekit/adapters/sqlalchemy_core_adapter.py
-from sqlalchemy import Table, MetaData, select, insert, update, delete, inspect, Column
-from sqlalchemy.sql import and_, text, or_
+from sqlalchemy import Table, MetaData, select, insert, update, delete, inspect, Column, and_, text, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.types import Integer, String, Float, DateTime, Boolean
+from sqlalchemy.orm import sessionmaker
+from dataclasses import dataclass
+from typing import List, Dict, Any, Iterator, Optional, Tuple
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.connection import DatastoreConnection
 from datastorekit.exceptions import DuplicateKeyError, NullValueError, DatastoreOperationError
-from typing import List, Dict, Any, Iterator, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class DBTable:
+    table_name: str
+    table: Table
 
 class SQLAlchemyCoreAdapter(DatastoreAdapter):
     def __init__(self, profile: DatabaseProfile):
@@ -18,6 +24,7 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
         self.engine = self.connection.get_engine()
         self.session_factory = self.connection.get_session_factory()
         self.metadata = MetaData()
+        self.Session = self.session_factory
 
     def _handle_db_error(self, e: Exception, operation: str, table_name: str):
         if isinstance(e, IntegrityError):
@@ -37,7 +44,6 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
             return []
 
     def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
-        """Create a table with the given schema."""
         try:
             type_map = {
                 "Integer": Integer,
@@ -58,7 +64,6 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
             raise DatastoreOperationError(f"Failed to create table {table_name}: {e}")
 
     def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
-        """Get column names and types for a table."""
         try:
             inspector = inspect(self.engine)
             columns = inspector.get_columns(table_name, schema=schema_name or self.profile.schema or "public")
@@ -67,102 +72,196 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
             logger.error(f"Failed to get columns for table {table_name}: {e}")
             return {}
 
-    def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
+    def create(self, table_name: str, records: List[Dict]) -> int:
+        dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
         try:
-            with self.engine.connect() as conn:
-                with conn.begin():
-                    conn.execute(insert(table), data)
+            _, rowcount = self._create_records(dbtable, records)
+            return rowcount
         except Exception as e:
-            logger.error(f"Insert failed for table {table_name}: {e}")
-            self._handle_db_error(e, "insert", table_name)
+            self._handle_db_error(e, "create", table_name)
 
-    def select(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def _create_records(self, dbtable: DBTable, records: List[Dict], session: Optional[sessionmaker] = None) -> Tuple[List[Any], int]:
+        created_session = False
+        if session is None:
+            session = self.Session()
+            created_session = True
+
+        try:
+            primary_keys = [col.name for col in dbtable.table.primary_key]
+            if not primary_keys:
+                raise ValueError("Table must have a primary key for insert operations.")
+
+            stmt = insert(dbtable.table).values(records).returning(*dbtable.table.primary_key)
+            result = session.execute(stmt)
+
+            if created_session:
+                session.commit()
+
+            inserted_ids = [row[0] if len(primary_keys) == 1 else dict(row) for row in result.fetchall()]
+            return inserted_ids, result.rowcount
+        except Exception as e:
+            if created_session:
+                session.rollback()
+            raise Exception(f"Error during bulk insert into {dbtable.table_name}: {e}")
+        finally:
+            if created_session:
+                session.close()
+
+    def read(self, table_name: str, filters: Optional[Dict] = None) -> List[Dict]:
         table = Table(table_name, self.metadata, autoload_with=self.engine)
         query = select(table)
         if filters:
             for key, value in filters.items():
                 query = query.where(table.c[key] == value)
-        with self.engine.connect() as conn:
-            result = conn.execute(query).fetchall()
-            return [dict(row._mapping) for row in result]
+        try:
+            with self.Session() as session:
+                result = session.execute(query).fetchall()
+                return [dict(row._mapping) for row in result]
+        except Exception as e:
+            self._handle_db_error(e, "read", table_name)
 
-    def select_chunks(self, table_name: str, filters: Optional[Dict[str, Any]] = None, chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
+    def select_chunks(self, table_name: str, filters: Optional[Dict] = None, chunk_size: int = 100000) -> Iterator[List[Dict]]:
         table = Table(table_name, self.metadata, autoload_with=self.engine)
         query = select(table)
         if filters:
             for key, value in filters.items():
                 query = query.where(table.c[key] == value)
-        with self.engine.connect() as conn:
-            result = conn.execution_options(yield_per=chunk_size).execute(query)
-            for partition in result.partitions():
-                yield [dict(row._mapping) for row in partition]
-
-    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None):
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
         try:
             with self.engine.connect() as conn:
-                with conn.begin():
-                    for update_data in data:
-                        if filters:
-                            where_clause = and_(*(table.c[key] == filters[key] for key in filters))
-                        else:
-                            key_columns = self.get_reflected_keys(table_name)
-                            where_clause = and_(*(table.c[key] == update_data[key] for key in key_columns if key in update_data))
-                        query = update(table).where(where_clause).values(**update_data)
-                        conn.execute(query)
+                result = conn.execution_options(yield_per=chunk_size).execute(query)
+                for partition in result.partitions():
+                    yield [dict(row._mapping) for row in partition]
         except Exception as e:
-            logger.error(f"Update failed for table {table_name}: {e}")
+            self._handle_db_error(e, "select_chunks", table_name)
+
+    def update(self, table_name: str, updates: List[Dict]) -> int:
+        dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
+        try:
+            return self._update_records(dbtable, updates)
+        except Exception as e:
             self._handle_db_error(e, "update", table_name)
 
-    def delete(self, table_name: str, filters: Optional[Dict[str, Any]] = None):
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-        query = delete(table)
-        if filters:
-            query = query.where(and_(*(table.c[key] == filters[key] for key in filters)))
+    def _update_records(self, dbtable: DBTable, updates: List[Dict], session: Optional[sessionmaker] = None) -> int:
+        created_session = False
+        if session is None:
+            session = self.Session()
+            created_session = True
+
         try:
-            with self.engine.connect() as conn:
-                with conn.begin():
-                    conn.execute(query)
+            primary_keys = [col.name for col in dbtable.table.primary_key]
+            if not primary_keys:
+                raise ValueError("Table must have a primary key for update operations.")
+
+            total_updated = 0
+            for update_dict in updates:
+                if not all(pk in update_dict for pk in primary_keys):
+                    raise ValueError(f"Update dictionary missing primary key(s): {primary_keys}")
+
+                stmt = (
+                    update(dbtable.table)
+                    .where(*[dbtable.table.columns[pk] == update_dict[pk] for pk in primary_keys])
+                    .values({k: v for k, v in update_dict.items() if k not in primary_keys})
+                )
+                result = session.execute(stmt)
+                total_updated += result.rowcount
+
+            if created_session:
+                session.commit()
+            return total_updated
         except Exception as e:
-            logger.error(f"Delete failed for table {table_name}: {e}")
+            if created_session:
+                session.rollback()
+            raise Exception(f"Error updating {dbtable.table_name}: {e}")
+        finally:
+            if created_session:
+                session.close()
+
+    def delete(self, table_name: str, conditions: List[Dict]) -> int:
+        dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
+        try:
+            return self._delete_records(dbtable, conditions)
+        except Exception as e:
             self._handle_db_error(e, "delete", table_name)
 
-    def apply_changes(self, table_name: str, inserts: List[Dict[str, Any]], 
-                      updates: List[Dict[str, Any]], deletes: List[Dict[str, Any]]):
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-        key_columns = self.get_reflected_keys(table_name)
+    def _delete_records(self, dbtable: DBTable, conditions: List[Dict], session: Optional[sessionmaker] = None) -> int:
+        created_session = False
+        if session is None:
+            session = self.Session()
+            created_session = True
+
         try:
-            with self.engine.connect() as conn:
-                with conn.begin():
-                    if inserts:
-                        conn.execute(insert(table), inserts)
-                        logger.debug(f"Applied {len(inserts)} inserts to {table_name}")
+            if not conditions:
+                raise ValueError("Conditions list cannot be empty.")
 
-                    if updates:
-                        for update_data in updates:
-                            update_values = {k: v for k, v in update_data.items() if k not in key_columns}
-                            if not update_values:
-                                continue
-                            where_clause = and_(*(table.c[key] == update_data[key] for key in key_columns if key in update_data))
-                            query = update(table).where(where_clause).values(**update_values)
-                            conn.execute(query)
-                        logger.debug(f"Applied {len(updates)} updates to {table_name}")
-
-                    if deletes:
-                        key_tuples = [tuple(d[key] for key in key_columns if key in d) for d in deletes]
-                        if key_tuples:
-                            where_clause = or_(
-                                and_(*(table.c[key] == key_tuple[i] for i, key in enumerate(key_columns)))
-                                for key_tuple in key_tuples
-                            )
-                            query = delete(table).where(where_clause)
-                            conn.execute(query)
-                        logger.debug(f"Applied {len(deletes)} deletes to {table_name}")
-
+            where_clauses = []
+            for cond in conditions:
+                if not cond:
+                    raise ValueError("Condition dictionary cannot be empty.")
+                
+                clause = []
+                for key, value in cond.items():
+                    if key not in dbtable.table.columns:
+                        raise ValueError(f"Invalid column name: {key} in table {dbtable.table_name}")
+                    clause.append(dbtable.table.columns[key] == value)
+                
+                where_clauses.append(and_(*clause))
+            
+            stmt = delete(dbtable.table).where(or_(*where_clauses))
+            result = session.execute(stmt)
+            
+            if created_session:
+                session.commit()
+            return result.rowcount
         except Exception as e:
-            logger.error(f"Failed to apply changes to {table_name}: {e}")
-            self._handle_db_error(e, "apply_changes", table_name)
+            if created_session:
+                session.rollback()
+            raise Exception(f"Error deleting from {dbtable.table_name}: {e}")
+        finally:
+            if created_session:
+                session.close()
+
+    def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
+        dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
+        with self.Session() as session:
+            try:
+                inserts = []
+                updates = []
+                deletes = []
+
+                for change in changes:
+                    if "operation" not in change:
+                        raise ValueError("Each change dictionary must include an 'operation' key")
+                    operation = change["operation"]
+                    data = {k: v for k, v in change.items() if k != "operation"}
+                    
+                    if operation == "create":
+                        inserts.append(data)
+                    elif operation == "update":
+                        updates.append(data)
+                    elif operation == "delete":
+                        deletes.append(data)
+                    else:
+                        raise ValueError(f"Invalid operation: {operation}")
+
+                inserted_ids = []
+                inserted_count = 0
+                updated_count = 0
+                deleted_count = 0
+
+                if inserts:
+                    inserted_ids, inserted_count = self._create_records(dbtable, inserts, session)
+
+                if updates:
+                    updated_count = self._update_records(dbtable, updates, session)
+
+                if deletes:
+                    deleted_count = self._delete_records(dbtable, deletes, session)
+
+                session.commit()
+                return inserted_ids, inserted_count, updated_count, deleted_count
+            except Exception as e:
+                session.rollback()
+                raise Exception(f"Error applying changes to {dbtable.table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         try:

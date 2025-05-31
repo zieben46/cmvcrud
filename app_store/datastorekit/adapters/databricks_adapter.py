@@ -1,170 +1,350 @@
+# datastorekit/adapters/databricks_sql_adapter.py
 from databricks.sql import connect
-from sqlalchemy import Table, MetaData, select, insert, update, delete, inspect
-from sqlalchemy.sql import and_, text
-from sqlalchemy.exc import OperationalError
+from databricks.sql.exc import DatabaseError
+from sqlalchemy.sql import text
+from typing import List, Dict, Any, Iterator, Optional, Tuple
 from datastorekit.adapters.base import DatastoreAdapter
-from datastorekit.connection import DatastoreConnection
-from typing import List, Dict, Any, Iterator, Optional
+from datastorekit.exceptions import DatastoreOperationError, DuplicateKeyError, NullValueError
+from dataclasses import dataclass
 import logging
 
 logger = logging.getLogger(__name__)
 
-class DatabricksAdapter(DatastoreAdapter):
-    def __init__(self, profile: DatastoreProfile):
+@dataclass
+class DBTable:
+    table_name: str
+    schema_name: str
+    catalog_name: str
+
+class DatabricksSQLAdapter(DatastoreAdapter):
+    def __init__(self, profile: DatabaseProfile):
         super().__init__(profile)
-        self.connection = DatastoreConnection(profile)
-        self.engine = self.connection.get_engine()
-        self.session_factory = self.connection.get_session_factory()
-        self.metadata = MetaData()
-        # Initialize Databricks SQL Connector
-        self.db_conn = connect(
-            server_hostname=profile.server_hostname,
-            http_path=profile.http_path,
-            access_token=profile.access_token,
-            catalog=profile.catalog,
-            schema=profile.schema
-        )
+        self.connection_config = {
+            "server_hostname": profile.host,
+            "http_path": profile.http_path,
+            "access_token": profile.access_token,
+            "catalog": profile.catalog or "hive_metastore",
+            "schema": profile.schema or "default"
+        }
+        self.connection = None
 
-    def validate_keys(self, table_name: str, table_info_keys: List[str]):
-        """Validate that table_info.keys match the table's primary keys."""
+    def _get_connection(self):
+        """Establish a connection to Databricks if not already connected."""
+        if self.connection is None:
+            try:
+                self.connection = connect(**self.connection_config)
+            except Exception as e:
+                logger.error(f"Failed to connect to Databricks: {e}")
+                raise DatastoreOperationError(f"Failed to connect to Databricks: {e}")
+        return self.connection
+
+    def _handle_db_error(self, e: Exception, operation: str, table_name: str):
+        """Handle Databricks-specific database errors."""
+        if isinstance(e, DatabaseError):
+            error_message = str(e).lower()
+            if "duplicate key" in error_message or "unique constraint" in error_message:
+                raise DuplicateKeyError(f"Duplicate key error during {operation} on {table_name}: {e}")
+            if "not-null constraint" in error_message or "cannot be null" in error_message:
+                raise NullValueError(f"Null value error during {operation} on {table_name}: {e}")
+        raise DatastoreOperationError(f"Error during {operation} on {table_name}: {e}")
+
+    def get_reflected_keys(self, table_name: str) -> List[str]:
+        """Get primary key column names for the specified table."""
         try:
-            # Use Databricks SQL Connector to get primary keys
-            cursor = self.db_conn.cursor()
-            cursor.execute(f"DESCRIBE TABLE {self.profile.catalog}.{self.profile.schema}.{table_name}")
-            columns = cursor.fetchall()
-            cursor.close()
-            db_keys = [col[0] for col in columns if "PRIMARY KEY" in col[1]]
-            if not db_keys:
-                return  # No primary keys, use table_info.keys
-            if set(db_keys) != set(table_info_keys):
-                raise ValueError(
-                    f"Table {table_name} primary keys {db_keys} do not match TableInfo keys {table_info_keys}"
-                )
+            dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+            query = f"""
+                DESCRIBE TABLE EXTENDED {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+            """
+            result = self.execute_sql(query)
+            primary_keys = []
+            for row in result:
+                if row.get("col_name") == "# Partition Information" or row.get("col_name") == "":
+                    break
+                if row.get("comment") and "PRIMARY KEY" in row.get("comment").upper():
+                    primary_keys.append(row.get("col_name"))
+            return primary_keys or (self.profile.keys.split(",") if self.profile.keys else [])
         except Exception as e:
-            logger.warning(f"Skipping key validation for Databricks table {table_name}: {e}")
-            return
-
-    def insert(self, table_name: str, data: List[Dict[str, Any]]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        table = Table(table_name, self.metadata, autoload_with=self.engine, schema=f"{self.profile.catalog}.{self.profile.schema}")
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(insert(table), data)
-                conn.commit()
-        except OperationalError as e:
-            logger.error(f"Insert failed for {table_name}: {e}")
-            raise
-
-    def select(self, table_name: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        table = Table(table_name, self.metadata, autoload_with=self.engine, schema=f"{self.profile.catalog}.{self.profile.schema}")
-        query = select(table)
-        for key, value in filters.items():
-            query = query.where(table.c[key] == value)
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(query).fetchall()
-                return [dict(row._mapping) for row in result]
-        except OperationalError as e:
-            logger.error(f"Select failed for {table_name}: {e}")
-            raise
-
-    def select_chunks(self, table_name: str, filters: Dict[str, Any], chunk_size: int = 100000) -> Iterator[List[Dict[str, Any]]]:
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        table = Table(table_name, self.metadata, autoload_with=self.engine, schema=f"{self.profile.catalog}.{self.profile.schema}")
-        query = select(table)
-        for key, value in filters.items():
-            query = query.where(table.c[key] == value)
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execution_options(yield_per=chunk_size).execute(query)
-                for partition in result.partitions():
-                    yield [dict(row._mapping) for row in partition]
-        except OperationalError as e:
-            logger.error(f"Select chunks failed for {table_name}: {e}")
-            raise
-
-    def update(self, table_name: str, data: List[Dict[str, Any]], filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        table = Table(table_name, self.metadata, autoload_with=self.engine, schema=f"{self.profile.catalog}.{self.profile.schema}")
-        try:
-            with self.engine.connect() as conn:
-                for update_data in data:
-                    query = update(table).where(
-                        and_(*(table.c[key] == filters[key] for key in filters))
-                    ).values(**update_data)
-                    conn.execute(query)
-                conn.commit()
-        except OperationalError as e:
-            logger.error(f"Update failed for {table_name}: {e}")
-            raise
-
-    def delete(self, table_name: str, filters: Dict[str, Any]):
-        self.validate_keys(table_name, self.table_info.keys.split(","))
-        table = Table(table_name, self.metadata, autoload_with=self.engine, schema=f"{self.profile.catalog}.{self.profile.schema}")
-        query = delete(table).where(
-            and_(*(table.c[key] == filters[key] for key in filters))
-        )
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(query)
-                conn.commit()
-        except OperationalError as e:
-            logger.error(f"Delete failed for {table_name}: {e}")
-            raise
-
-    def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Execute a raw SQL query using Databricks SQL Connector."""
-        try:
-            cursor = self.db_conn.cursor()
-            cursor.execute(sql, parameters or {})
-            if cursor.description:  # Check if query returns rows
-                columns = [col[0] for col in cursor.description]
-                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                cursor.close()
-                return results
-            cursor.close()
+            logger.error(f"Failed to get reflected keys for table {table_name}: {e}")
             return []
+
+    def create_table(self, table_name: str, schema: Dict[str, Any], schema_name: Optional[str] = None):
+        """Create a table with the given schema."""
+        try:
+            dbtable = DBTable(table_name, schema_name or self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+            type_map = {
+                "Integer": "INT",
+                "String": "STRING",
+                "Float": "FLOAT",
+                "DateTime": "TIMESTAMP",
+                "Boolean": "BOOLEAN"
+            }
+            columns = [f"{col_name} {type_map.get(col_type, 'STRING')}" for col_name, col_type in schema.items()]
+            primary_keys = self.profile.keys.split(",") if self.profile.keys else []
+            if primary_keys:
+                columns.append(f"PRIMARY KEY ({', '.join(primary_keys)})")
+            column_definitions = ", ".join(columns)
+            sql = f"""
+                CREATE TABLE IF NOT EXISTS {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                ({column_definitions})
+            """
+            self.execute_sql(sql)
+            logger.info(f"Created table {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}")
+        except Exception as e:
+            logger.error(f"Failed to create table {table_name}: {e}")
+            raise DatastoreOperationError(f"Failed to create table {table_name}: {e}")
+
+    def get_table_columns(self, table_name: str, schema_name: Optional[str] = None) -> Dict[str, str]:
+        """Get column names and types for the specified table."""
+        try:
+            dbtable = DBTable(table_name, schema_name or self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+            sql = f"""
+                DESCRIBE TABLE {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+            """
+            result = self.execute_sql(sql)
+            columns = {}
+            for row in result:
+                if row.get("col_name") == "# Partition Information" or row.get("col_name") == "":
+                    break
+                columns[row["col_name"]] = row["data_type"].upper()
+            return columns
+        except Exception as e:
+            logger.error(f"Failed to get columns for table {table_name}: {e}")
+            return {}
+
+    def create(self, table_name: str, records: List[Dict]) -> int:
+        """Insert records into the specified table using SQL."""
+        dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+        try:
+            if not records:
+                return 0
+            columns = list(records[0].keys())
+            placeholders = ", ".join([f":{col}" for col in columns])
+            columns_str = ", ".join(columns)
+            sql = f"""
+                INSERT INTO {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                ({columns_str}) VALUES ({placeholders})
+            """
+            rowcount = 0
+            for record in records:
+                result = self.execute_sql(sql, record)
+                rowcount += 1  # Databricks SQL Connector doesn't return rowcount for INSERT, so we count records
+            return rowcount
+        except Exception as e:
+            self._handle_db_error(e, "create", table_name)
+
+    def read(self, table_name: str, filters: Optional[Dict] = None) -> List[Dict]:
+        """Retrieve records from the specified table using SQL with optional filters."""
+        dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+        try:
+            where_clause = ""
+            params = {}
+            if filters:
+                conditions = [f"{key} = :{key}" for key in filters.keys()]
+                where_clause = f" WHERE {' AND '.join(conditions)}"
+                params = filters
+            sql = f"""
+                SELECT * FROM {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                {where_clause}
+            """
+            return self.execute_sql(sql, params)
+        except Exception as e:
+            self._handle_db_error(e, "read", table_name)
+
+    def select_chunks(self, table_name: str, filters: Optional[Dict] = None, chunk_size: int = 100000) -> Iterator[List[Dict]]:
+        """Retrieve records in chunks using SQL with optional filters."""
+        dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+        try:
+            where_clause = ""
+            params = {}
+            if filters:
+                conditions = [f"{key} = :{key}" for key in filters.keys()]
+                where_clause = f" WHERE {' AND '.join(conditions)}"
+                params = filters
+            sql = f"""
+                SELECT * FROM {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                {where_clause}
+            """
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(sql, params)
+                while True:
+                    rows = cursor.fetchmany(chunk_size)
+                    if not rows:
+                        break
+                    yield [dict(row) for row in rows]
+        except Exception as e:
+            self._handle_db_error(e, "select_chunks", table_name)
+
+    def update(self, table_name: str, updates: List[Dict]) -> int:
+        """Update records in the specified table using SQL based on primary keys."""
+        dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+        try:
+            primary_keys = self.get_reflected_keys(table_name)
+            if not primary_keys:
+                raise ValueError("Table must have a primary key for update operations.")
+
+            total_updated = 0
+            for update_dict in updates:
+                if not all(pk in update_dict for pk in primary_keys):
+                    raise ValueError(f"Update dictionary missing primary key(s): {primary_keys}")
+
+                set_clause = ", ".join([f"{k} = :{k}" for k, v in update_dict.items() if k not in primary_keys])
+                where_clause = " AND ".join([f"{pk} = :{pk}" for pk in primary_keys])
+                sql = f"""
+                    UPDATE {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                    SET {set_clause}
+                    WHERE {where_clause}
+                """
+                result = self.execute_sql(sql, update_dict)
+                total_updated += 1  # Databricks SQL Connector doesn't return rowcount for UPDATE
+            return total_updated
+        except Exception as e:
+            self._handle_db_error(e, "update", table_name)
+
+    def delete(self, table_name: str, conditions: List[Dict]) -> int:
+        """Delete records from the specified table using SQL based on conditions."""
+        dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+        try:
+            if not conditions:
+                raise ValueError("Conditions list cannot be empty.")
+
+            total_deleted = 0
+            for cond in conditions:
+                if not cond:
+                    raise ValueError("Condition dictionary cannot be empty.")
+                where_clause = " AND ".join([f"{key} = :{key}" for key in cond.keys()])
+                sql = f"""
+                    DELETE FROM {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                    WHERE {where_clause}
+                """
+                result = self.execute_sql(sql, cond)
+                total_deleted += 1  # Databricks SQL Connector doesn't return rowcount for DELETE
+            return total_deleted
+        except Exception as e:
+            self._handle_db_error(e, "delete", table_name)
+
+    def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
+        """Apply create, update, and delete operations in one transaction using SQL."""
+        dbtable = DBTable(table_name, self.profile.schema or "default", self.profile.catalog or "hive_metastore")
+        try:
+            inserts = []
+            updates = []
+            deletes = []
+
+            for change in changes:
+                if "operation" not in change:
+                    raise ValueError("Each change dictionary must include an 'operation' key")
+                operation = change["operation"]
+                data = {k: v for k, v in change.items() if k != "operation"}
+
+                if operation == "create":
+                    inserts.append(data)
+                elif operation == "update":
+                    updates.append(data)
+                elif operation == "delete":
+                    deletes.append(data)
+                else:
+                    raise ValueError(f"Invalid operation: {operation}")
+
+            inserted_ids = []
+            inserted_count = 0
+            updated_count = 0
+            deleted_count = 0
+            primary_keys = self.get_reflected_keys(table_name)
+
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                try:
+                    # Perform inserts
+                    if inserts:
+                        columns = list(inserts[0].keys())
+                        placeholders = ", ".join([f":{col}" for col in columns])
+                        columns_str = ", ".join(columns)
+                        sql = f"""
+                            INSERT INTO {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                            ({columns_str}) VALUES ({placeholders})
+                            RETURNING {', '.join(primary_keys)}
+                        """
+                        for record in inserts:
+                            cursor.execute(sql, record)
+                            inserted_ids.append(cursor.fetchone()[0] if len(primary_keys) == 1 else dict(zip(primary_keys, cursor.fetchone())))
+                        inserted_count = len(inserts)
+
+                    # Perform updates
+                    if updates:
+                        for update_dict in updates:
+                            if not all(pk in update_dict for pk in primary_keys):
+                                raise ValueError(f"Update dictionary missing primary key(s): {primary_keys}")
+                            set_clause = ", ".join([f"{k} = :{k}" for k, v in update_dict.items() if k not in primary_keys])
+                            where_clause = " AND ".join([f"{pk} = :{pk}" for pk in primary_keys])
+                            sql = f"""
+                                UPDATE {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                                SET {set_clause}
+                                WHERE {where_clause}
+                            """
+                            cursor.execute(sql, update_dict)
+                            updated_count += 1  # Approximate count
+
+                    # Perform deletes
+                    if deletes:
+                        for cond in deletes:
+                            if not cond:
+                                raise ValueError("Condition dictionary cannot be empty.")
+                            where_clause = " AND ".join([f"{key} = :{key}" for key in cond.keys()])
+                            sql = f"""
+                                DELETE FROM {dbtable.catalog_name}.{dbtable.schema_name}.{dbtable.table_name}
+                                WHERE {where_clause}
+                            """
+                            cursor.execute(sql, cond)
+                            deleted_count += 1  # Approximate count
+
+                    conn.commit()
+                    return inserted_ids, inserted_count, updated_count, deleted_count
+                except Exception as e:
+                    conn.rollback()
+                    raise
+        except Exception as e:
+            self._handle_db_error(e, "apply_changes", table_name)
+
+    def execute_sql(self, sql: str, parameters: Optional[Dict] = None) -> List[Dict]:
+        """Execute a raw SQL query on Databricks."""
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(sql, parameters or {})
+                if cursor.description:  # Query returns results
+                    columns = [col[0] for col in cursor.description]
+                    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                return []
         except Exception as e:
             logger.error(f"Failed to execute SQL: {sql}, error: {e}")
-            raise
+            self._handle_db_error(e, "execute_sql", "unknown")
 
     def list_tables(self, schema: str) -> List[str]:
-        """List tables in the given schema using Databricks SQL Connector."""
+        """List all tables in the specified schema."""
         try:
-            cursor = self.db_conn.cursor()
-            cursor.execute(f"SHOW TABLES IN {self.profile.catalog}.{schema}")
-            tables = [row[1] for row in cursor.fetchall()]  # Table name is in second column
-            cursor.close()
-            return tables
+            catalog = self.profile.catalog or "hive_metastore"
+            sql = f"""
+                SHOW TABLES IN {catalog}.{schema}
+            """
+            result = self.execute_sql(sql)
+            return [row["tableName"] for row in result]
         except Exception as e:
-            logger.error(f"Failed to list tables for schema {schema}: {e}")
+            logger.error(f"Failed to list tables in schema {schema}: {e}")
             return []
 
     def get_table_metadata(self, schema: str) -> Dict[str, Dict]:
-        """Get metadata for all tables in the schema using Databricks SQL Connector."""
+        """Get metadata for all tables in the specified schema."""
         try:
-            cursor = self.db_conn.cursor()
             metadata = {}
-            cursor.execute(f"SHOW TABLES IN {self.profile.catalog}.{schema}")
-            table_names = [row[1] for row in cursor.fetchall()]
-            for table_name in table_names:
-                cursor.execute(f"DESCRIBE TABLE {self.profile.catalog}.{schema}.{table_name}")
-                columns = cursor.fetchall()
-                col_dict = {col[0]: col[1] for col in columns if col[0]}  # Column name: type
-                # Primary keys (Databricks may not always expose via DESCRIBE)
-                pk_columns = [col[0] for col in columns if "PRIMARY KEY" in col[1]]
+            for table_name in self.list_tables(schema):
+                columns = self.get_table_columns(table_name, schema)
+                primary_keys = self.get_reflected_keys(table_name)
                 metadata[table_name] = {
-                    "columns": col_dict,
-                    "primary_keys": pk_columns
+                    "columns": columns,
+                    "primary_keys": primary_keys
                 }
-            cursor.close()
             return metadata
         except Exception as e:
             logger.error(f"Failed to get table metadata for schema {schema}: {e}")
             return {}
-
-    def __del__(self):
-        """Ensure Databricks connection is closed."""
-        if hasattr(self, 'db_conn'):
-            self.db_conn.close()
