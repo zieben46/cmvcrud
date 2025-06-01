@@ -1,12 +1,14 @@
 # datastorekit/replication/databricks_to_postgres_sql.py
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
-from datastorekit.orchestrator import DataStoreOrchestrator
+from datastorekit.datastore_orchestrator import DataStoreOrchestrator
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
 from datastorekit.exceptions import DatastoreOperationError
 import logging
 import os
+
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +157,7 @@ class DatabricksToPostgresSQLReplicator:
         return total_records
 
     def _incremental_merge(self, source_table: DBTable, target_table: DBTable, version_range: Tuple[int, int]) -> int:
-        """Perform an incremental merge using Databricks Change Data Feed.
+        """Perform an incremental merge using Databricks Change Data Feed, applying changes version by version.
         
         Args:
             source_table: Source DBTable object (Databricks).
@@ -164,6 +166,9 @@ class DatabricksToPostgresSQLReplicator:
         
         Returns:
             Number of changes applied.
+        
+        Raises:
+            DatastoreOperationError: If applying changes fails.
         """
         start_version, end_version = version_range
         logger.info(f"Fetching CDF changes for {self.source_schema}.{source_table.table_name} from version {start_version} to {end_version}")
@@ -182,34 +187,45 @@ class DatabricksToPostgresSQLReplicator:
         target_adapter = self.orchestrator.adapters[f"{self.target_db}:{self.target_schema}"]
         processed_changes = 0
 
-        # Process changes in chunks
-        for i in range(0, total_changes, self.cdf_batch_size):
-            chunk = changes[i:i + self.cdf_batch_size]
-            operations = []
-            for change in chunk:
-                change_type = change.get("_change_type")
-                record = {k: v for k, v in change.items() if not k.startswith("_")}
-                operation = {
-                    "operation": (
-                        "create" if change_type in ["insert", "update_postimage"] else
-                        "update" if change_type == "update_preimage" else
-                        "delete" if change_type == "delete" else None
-                    ),
-                    **record
-                }
-                if operation["operation"]:
-                    operations.append(operation)
+        # Group changes by _commit_version
+        changes_by_version = defaultdict(list)
+        for change in changes:
+            change_type = change.get("_change_type")
+            record = {k: v for k, v in change.items() if not k.startswith("_")}
+            operation = {
+                "operation": (
+                    "create" if change_type in ["insert", "update_postimage"] else
+                    "update" if change_type == "update_preimage" else
+                    "delete" if change_type == "delete" else None
+                ),
+                **record
+            }
+            if operation["operation"]:
+                version = change.get("_commit_version", float("inf"))
+                changes_by_version[version].append(operation)
 
-            try:
-                target_adapter.apply_changes(
-                    table_name=target_table.table_name,
-                    changes=operations
-                )
-                processed_changes += len(chunk)
-                logger.debug(f"Applied chunk {i // self.cdf_batch_size + 1} with {len(chunk)} changes")
-            except Exception as e:
-                logger.error(f"Failed to apply chunk {i // self.cdf_batch_size + 1}: {e}")
-                raise DatastoreOperationError(f"Failed to apply chunk: {e}")
+        # Process changes version by version in ascending order
+        key_columns = target_adapter.get_reflected_keys(target_table.table_name) or (target_adapter.profile.keys.split(",") if target_adapter.profile.keys else [])
+        if not key_columns:
+            raise ValueError(f"No primary keys defined for table {target_table.table_name}")
+
+        for version in sorted(changes_by_version.keys()):
+            version_changes = changes_by_version[version]
+            logger.debug(f"Processing {len(version_changes)} changes for version {version}")
+
+            # Process version changes in chunks
+            for i in range(0, len(version_changes), self.cdf_batch_size):
+                chunk = version_changes[i:i + self.cdf_batch_size]
+                try:
+                    target_adapter.apply_changes(
+                        table_name=target_table.table_name,
+                        changes=chunk
+                    )
+                    processed_changes += len(chunk)
+                    logger.debug(f"Applied chunk {i // self.cdf_batch_size + 1} with {len(chunk)} changes for version {version}")
+                except Exception as e:
+                    logger.error(f"Failed to apply chunk {i // self.cdf_batch_size + 1} for version {version}: {e}")
+                    raise DatastoreOperationError(f"Failed to apply chunk for version {version}: {e}")
 
         logger.info(f"Completed incremental merge of {total_changes} changes into {self.target_schema}.{target_table.table_name}")
         return total_changes

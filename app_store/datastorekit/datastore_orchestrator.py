@@ -5,7 +5,7 @@ from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.models.db_table import DBTable
 from datastorekit.models.table_info import TableInfo
 from datastorekit.profile import DatabaseProfile
-from datastorekit.utils import detect_changes
+from datastorekit.utils import generate_sync_operations
 from datastorekit.exceptions import DatastoreOperationError
 import pandas as pd
 import logging
@@ -58,14 +58,14 @@ class DataStoreOrchestrator:
         return adapter_class(profile)
 
     def process_changes(self, adapter: DatastoreAdapter, table_name: str, source_df: pd.DataFrame, target_df: pd.DataFrame, chunk_size: Optional[int] = None):
-        """Process changes (inserts, updates, deletes) between source and target DataFrames.
+        """Process changes (create, update, delete) between source and target DataFrames, chunking both to avoid memory issues.
         
         Args:
             adapter: DatastoreAdapter for the target datastore.
             table_name: Name of the target table.
             source_df: Pandas DataFrame with source data.
             target_df: Pandas DataFrame with target data.
-            chunk_size: Optional size of chunks for processing large datasets.
+            chunk_size: Optional size of chunks for processing large datasets (default: None, no chunking).
         
         Raises:
             DatastoreOperationError: If processing changes fails.
@@ -76,27 +76,71 @@ class DataStoreOrchestrator:
                 raise ValueError(f"No primary keys defined for table {table_name}")
 
             if chunk_size:
+                inserted_count = 0
+                updated_count = 0
+                deleted_count = 0
+                source_chunk_count = (len(source_df) + chunk_size - 1) // chunk_size
+                target_chunk_count = (len(target_df) + chunk_size - 1) // chunk_size
+
                 for i in range(0, len(source_df), chunk_size):
                     source_chunk = source_df.iloc[i:i + chunk_size]
-                    inserts, updates, deletes = detect_changes(source_chunk, target_df, key_columns)
-                    changes = (
-                        [{"operation": "create", **record} for record in inserts] +
-                        [{"operation": "update", **record} for record in updates] +
-                        [{"operation": "delete", **record} for record in deletes]
-                    )
-                    logger.debug(f"Chunk {i // chunk_size + 1}: {len(inserts)} inserts, {len(updates)} updates, {len(deletes)} deletes for {table_name}")
-                    if changes:
-                        adapter.apply_changes(table_name, changes)
+                    source_chunk_index = i // chunk_size + 1
+                    logger.debug(f"Processing source chunk {source_chunk_index}/{source_chunk_count} with {len(source_chunk)} records")
+
+                    # Initialize aggregated changes
+                    all_changes = []
+
+                    # Process target_df in chunks
+                    for j in range(0, len(target_df), chunk_size):
+                        target_chunk = target_df.iloc[j:j + chunk_size]
+                        target_chunk_index = j // chunk_size + 1
+                        logger.debug(f"Comparing against target chunk {target_chunk_index}/{target_chunk_count} with {len(target_chunk)} records")
+
+                        # Generate changes
+                        changes = generate_sync_operations(source_chunk, target_chunk, key_columns)
+                        all_changes.extend(changes)
+
+                        # Free memory
+                        del target_chunk
+
+                    # Deduplicate changes by operation and primary key
+                    unique_changes = []
+                    seen_keys = set()
+                    for change in all_changes:
+                        key_tuple = tuple(change.get(k, "") for k in key_columns)
+                        operation_key = (change["operation"], key_tuple)
+                        if operation_key not in seen_keys:
+                            unique_changes.append(change)
+                            seen_keys.add(operation_key)
+
+                    # Apply changes
+                    if unique_changes:
+                        _, ic, uc, dc = adapter.apply_changes(table_name, unique_changes)
+                        inserted_count += ic
+                        updated_count += uc
+                        deleted_count += dc
+
+                    logger.debug(f"Source chunk {source_chunk_index}: {sum(1 for c in unique_changes if c['operation'] == 'create')} creates, "
+                                 f"{sum(1 for c in unique_changes if c['operation'] == 'update')} updates, "
+                                 f"{sum(1 for c in unique_changes if c['operation'] == 'delete')} deletes for {table_name}")
+
+                    # Free memory
+                    del source_chunk, all_changes, unique_changes, seen_keys
+
+                logger.debug(f"Total: {inserted_count} creates, {updated_count} updates, {deleted_count} deletes for {table_name}")
             else:
-                inserts, updates, deletes = detect_changes(source_df, target_df, key_columns)
-                changes = (
-                    [{"operation": "create", **record} for record in inserts] +
-                    [{"operation": "update", **record} for record in updates] +
-                    [{"operation": "delete", **record} for record in deletes]
-                )
-                logger.debug(f"Computed {len(inserts)} inserts, {len(updates)} updates, {len(deletes)} deletes for {table_name}")
+                # No chunking: process entire DataFrames (for small datasets)
+                changes = generate_sync_operations(source_df, target_df, key_columns)
+                logger.debug(f"Computed {sum(1 for c in changes if c['operation'] == 'create')} creates, "
+                             f"{sum(1 for c in changes if c['operation'] == 'update')} updates, "
+                             f"{sum(1 for c in changes if c['operation'] == 'delete')} deletes for {table_name}")
                 if changes:
                     adapter.apply_changes(table_name, changes)
+
+        except Exception as e:
+            logger.error(f"Failed to process changes for table {table_name} with adapter {adapter.profile.db_type}: {e}")
+            raise DatastoreOperationError(f"Failed to process changes: {e}")
+
         except Exception as e:
             logger.error(f"Failed to process changes for table {table_name} with adapter {adapter.profile.db_type}: {e}")
             raise DatastoreOperationError(f"Failed to process changes: {e}")
