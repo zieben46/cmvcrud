@@ -1,4 +1,3 @@
-# datastorekit/adapters/sqlalchemy_core_adapter.py
 from sqlalchemy import Table, MetaData, select, insert, update, delete, inspect, Column, and_, text, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.types import Integer, String, Float, DateTime, Boolean
@@ -8,6 +7,7 @@ from typing import List, Dict, Any, Iterator, Optional, Tuple
 from datastorekit.adapters.base import DatastoreAdapter
 from datastorekit.connection import DatastoreConnection
 from datastorekit.exceptions import DuplicateKeyError, NullValueError, DatastoreOperationError
+from contextlib import contextmanager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,18 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
         self.session_factory = self.connection.get_session_factory()
         self.metadata = MetaData()
         self.Session = self.session_factory
+
+    @contextmanager
+    def get_session(self):
+        session = self.Session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def _handle_db_error(self, e: Exception, operation: str, table_name: str):
         if isinstance(e, IntegrityError):
@@ -74,35 +86,22 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
 
     def create(self, table_name: str, records: List[Dict]) -> int:
         dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
-        try:
-            return self._create_records(dbtable, records)
-        except Exception as e:
-            self._handle_db_error(e, "create", table_name)
+        with self.get_session() as session:
+            try:
+                return self.create_records_with_session(dbtable, records, session)
+            except Exception as e:
+                self._handle_db_error(e, "create", table_name)
 
-    def _create_records(self, dbtable: DBTable, records: List[Dict], session: Optional[sessionmaker] = None) -> int:
-        created_session = False
-        if session is None:
-            session = self.Session()
-            created_session = True
-
+    def create_records_with_session(self, dbtable: DBTable, records: List[Dict], session: sessionmaker) -> int:
         try:
             if not records:
                 return 0
-
             stmt = insert(dbtable.table).values(records)
             result = session.execute(stmt)
-
-            if created_session:
-                session.commit()
             return result.rowcount
         except Exception as e:
-            if created_session:
-                session.rollback()
             raise Exception(f"Error during bulk insert into {dbtable.table_name}: {e}")
-        finally:
-            if created_session:
-                session.close()
-                
+
     def read(self, table_name: str, filters: Optional[Dict] = None) -> List[Dict]:
         table = Table(table_name, self.metadata, autoload_with=self.engine)
         query = select(table)
@@ -132,27 +131,21 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
 
     def update(self, table_name: str, updates: List[Dict]) -> int:
         dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
-        try:
-            return self._update_records(dbtable, updates)
-        except Exception as e:
-            self._handle_db_error(e, "update", table_name)
+        with self.get_session() as session:
+            try:
+                return self.update_records_with_session(dbtable, updates, session)
+            except Exception as e:
+                self._handle_db_error(e, "update", table_name)
 
-    def _update_records(self, dbtable: DBTable, updates: List[Dict], session: Optional[sessionmaker] = None) -> int:
-        created_session = False
-        if session is None:
-            session = self.Session()
-            created_session = True
-
+    def update_records_with_session(self, dbtable: DBTable, updates: List[Dict], session: sessionmaker) -> int:
         try:
             primary_keys = [col.name for col in dbtable.table.primary_key]
             if not primary_keys:
                 raise ValueError("Table must have a primary key for update operations.")
-
             total_updated = 0
             for update_dict in updates:
                 if not all(pk in update_dict for pk in primary_keys):
                     raise ValueError(f"Update dictionary missing primary key(s): {primary_keys}")
-
                 stmt = (
                     update(dbtable.table)
                     .where(*[dbtable.table.columns[pk] == update_dict[pk] for pk in primary_keys])
@@ -160,101 +153,74 @@ class SQLAlchemyCoreAdapter(DatastoreAdapter):
                 )
                 result = session.execute(stmt)
                 total_updated += result.rowcount
-
-            if created_session:
-                session.commit()
             return total_updated
         except Exception as e:
-            if created_session:
-                session.rollback()
             raise Exception(f"Error updating {dbtable.table_name}: {e}")
-        finally:
-            if created_session:
-                session.close()
 
     def delete(self, table_name: str, conditions: List[Dict]) -> int:
         dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
-        try:
-            return self._delete_records(dbtable, conditions)
-        except Exception as e:
-            self._handle_db_error(e, "delete", table_name)
+        with self.get_session() as session:
+            try:
+                return self.delete_records_with_session(dbtable, conditions, session)
+            except Exception as e:
+                self._handle_db_error(e, "delete", table_name)
 
-    def _delete_records(self, dbtable: DBTable, conditions: List[Dict], session: Optional[sessionmaker] = None) -> int:
-        created_session = False
-        if session is None:
-            session = self.Session()
-            created_session = True
-
+    def delete_records_with_session(self, dbtable: DBTable, conditions: List[Dict], session: sessionmaker) -> int:
         try:
             if not conditions:
                 raise ValueError("Conditions list cannot be empty.")
-
             where_clauses = []
             for cond in conditions:
                 if not cond:
                     raise ValueError("Condition dictionary cannot be empty.")
-                
                 clause = []
                 for key, value in cond.items():
                     if key not in dbtable.table.columns:
                         raise ValueError(f"Invalid column name: {key} in table {dbtable.table_name}")
                     clause.append(dbtable.table.columns[key] == value)
-                
                 where_clauses.append(and_(*clause))
-            
             stmt = delete(dbtable.table).where(or_(*where_clauses))
             result = session.execute(stmt)
-            
+            return result.rowcount
+        except Exception as e:
+            raise Exception(f"Error deleting from {dbtable.table_name}: {e}")
+
+    def apply_changes(self, table_name: str, changes: List[Dict], session: Optional[sessionmaker] = None) -> Tuple[List[Any], int, int, int]:
+        created_session = False
+        if session is None:
+            session = self.Session()
+            created_session = True
+        dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
+        try:
+            inserts = []
+            updates = []
+            deletes = []
+            for change in changes:
+                if "operation" not in change:
+                    raise ValueError("Each change dictionary must include an 'operation' key")
+                operation = change["operation"]
+                data = {k: v for k, v in change.items() if k != "operation"}
+                if operation == "create":
+                    inserts.append(data)
+                elif operation == "update":
+                    updates.append(data)
+                elif operation == "delete":
+                    deletes.append(data)
+                else:
+                    raise ValueError(f"Invalid operation: {operation}")
+            inserted_count = self.create_records_with_session(dbtable, inserts, session) if inserts else 0
+            updated_count = self.update_records_with_session(dbtable, updates, session) if updates else 0
+            deleted_count = self.delete_records_with_session(dbtable, deletes, session) if deletes else 0
             if created_session:
                 session.commit()
-            return result.rowcount
+            return [], inserted_count, updated_count, deleted_count
         except Exception as e:
             if created_session:
                 session.rollback()
-            raise Exception(f"Error deleting from {dbtable.table_name}: {e}")
+            raise Exception(f"Error applying changes to {dbtable.table_name}: {e}")
         finally:
             if created_session:
                 session.close()
-
-    def apply_changes(self, table_name: str, changes: List[Dict]) -> Tuple[List[Any], int, int, int]:
-            dbtable = DBTable(table_name, Table(table_name, self.metadata, autoload_with=self.engine))
-            with self.Session() as session:
-                try:
-                    inserts = []
-                    updates = []
-                    deletes = []
-
-                    for change in changes:
-                        if "operation" not in change:
-                            raise ValueError("Each change dictionary must include an 'operation' key")
-                        operation = change["operation"]
-                        data = {k: v for k, v in change.items() if k != "operation"}
-                        
-                        if operation == "create":
-                            inserts.append(data)
-                        elif operation == "update":
-                            updates.append(data)
-                        elif operation == "delete":
-                            deletes.append(data)
-                        else:
-                            raise ValueError(f"Invalid operation: {operation}")
-
-                    inserted_count = 0
-                    updated_count = 0
-                    deleted_count = 0
-
-                    if inserts:
-                        inserted_count = self._create_records(dbtable, inserts, session)
-                    if updates:
-                        updated_count = self._update_records(dbtable, updates, session)
-                    if deletes:
-                        deleted_count = self._delete_records(dbtable, deletes, session)
-
-                    session.commit()
-                    return [], inserted_count, updated_count, deleted_count
-                except Exception as e:
-                    session.rollback()
-                    raise Exception(f"Error applying changes to {dbtable.table_name}: {e}")
 
     def execute_sql(self, sql: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         try:
